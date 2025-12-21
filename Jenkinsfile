@@ -54,26 +54,16 @@ pipeline {
                 script {
                     echo '--- [Run] Starting WebGoat + Seeker ---'
                     
-                    // BƯỚC DEBUG: In ra danh sách tất cả file .jar tìm thấy để kiểm tra
-                    echo "--- DEBUG: Tìm kiếm các file .jar trong thư mục ---"
-                    sh "find . -name '*.jar' || true"
+                    def webgoatJar = sh(script: 'find target -name "webgoat-*.jar" | head -n 1', returnStdout: true).trim()
+                    if (webgoatJar == "") { error "Không tìm thấy file .jar!" }
 
-                    // THAY ĐỔI: Dùng lệnh 'find' để tìm file thay vì 'ls' cứng nhắc
-                    // Lệnh này sẽ tìm file bắt đầu bằng 'webgoat-server' và nằm trong thư mục 'target'
-                    def webgoatJar = sh(script: 'find . -name "webgoat-*.jar" | grep "target/" | head -n 1', returnStdout: true).trim()
-                    
-                    echo ">>> File jar tìm được: ${webgoatJar}"
-
-                    if (webgoatJar == "") {
-                        error "Vẫn không tìm thấy file .jar! Hãy kiểm tra lại bước Build xem có lỗi không."
-                    }
-
-                    // Kill process cũ
                     sh "pkill -f webgoat || true"
 
-                    // Chạy ứng dụng
+                    // THÊM: Cấp thêm RAM cho Java (WebGoat + IAST khá nặng)
+                    // -Xmx2g: Cho phép dùng tối đa 2GB RAM
                     String startCmd = """
                         nohup java \
+                        -Xmx2g \
                         -javaagent:${WORKSPACE}/seeker/seeker-agent.jar \
                         -Dseeker.server.url=${SEEKER_SERVER_URL} \
                         -Dseeker.project.key=${SEEKER_PROJECT_KEY} \
@@ -84,22 +74,32 @@ pipeline {
                     """
                     sh startCmd
                     
-                    echo ">>> Waiting 45s for WebGoat to start..."
-                    sleep 45 
+                    echo ">>> Waiting 60s for WebGoat to start..."
+                    sleep 60 
                 }
             }
         }
+
         stage('4. Test & Generate Traffic') {
             steps {
                 script {
-                    echo '--- [Test] Sending Requests ---'
-                    // WebGoat 2023 URL có thể hơi khác, ta thử cả 2 đường dẫn
-                    sh "curl -v http://localhost:\${APP_PORT}/WebGoat/login || true"
-                    sh "curl -v http://localhost:\${APP_PORT}/webgoat/login || true"
+                    echo "--- [Test] Sending Requests to Port ${APP_PORT} ---"
+                    
+                    // Kiểm tra xem process có còn sống không
+                    try {
+                        // Thử kết nối
+                        sh "curl -v --fail http://localhost:${APP_PORT}/WebGoat/login"
+                    } catch (Exception e) {
+                        echo "❌ LỖI: Không kết nối được WebGoat!"
+                        echo "================= APP LOGS (DEBUG) ================="
+                        // QUAN TRỌNG: In nội dung log ra để xem tại sao nó chết
+                        sh "cat app_webgoat.log"
+                        echo "===================================================="
+                        error "Ứng dụng không khởi động được. Xem log ở trên."
+                    }
                 }
             }
-        }
-        
+        }        
         stage('5. Quality Gate') {
             steps {
                 script {
