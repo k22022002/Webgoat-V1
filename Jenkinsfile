@@ -53,43 +53,57 @@ pipeline {
             }
         }
 
-        stage('3. Run App with IAST (Optimized)') {
-            steps {
-                script {
-                    echo '--- [Run] Starting WebGoat + Seeker ---'
-                    
-                    // Tìm file jar vừa build
-                    def webgoatJar = sh(script: 'find target -name "webgoat-*.jar" | head -n 1', returnStdout: true).trim()
-                    if (webgoatJar == "") { error "Không tìm thấy file .jar!" }
+	stage('3. Run App with IAST (Optimized)') {
+    steps {
+        script {
+            echo '--- [Run] Starting WebGoat + Seeker ---'
+            
+            // Find the jar
+            def webgoatJar = sh(script: 'find target -name "webgoat-*.jar" | head -n 1', returnStdout: true).trim()
+            if (webgoatJar == "") { error "No .jar file found!" }
 
-                    // Kill process cũ nếu bị treo
-                    sh "pkill -f webgoat || true"
+            // --- IMPROVED CLEANUP LOGIC ---
+            echo "Cleaning up old processes on port ${APP_PORT}..."
+            
+            // 1. Try to kill specifically by the port number (requires 'psmisc' package usually)
+            // If fuser is not installed, this line is skipped due to || true
+            sh "fuser -k -n tcp ${APP_PORT} || true"
+            
+            // 2. Fallback: Kill by name
+            sh "pkill -f webgoat || true"
 
-                    // CẤU HÌNH KHỞI CHẠY:
-                    // 1. --add-opens: Fix lỗi Java 17 module
-                    // 2. server.port: Chạy port 8090 để tránh Jenkins 8080
-                    // 3. server.address: 0.0.0.0 để mở kết nối ra ngoài
-                    String startCmd = """
-                        nohup java \
-                        --add-opens java.base/sun.nio.ch=ALL-UNNAMED \
-                        --add-opens java.base/java.io=ALL-UNNAMED \
-                        -Xmx2g \
-                        -javaagent:${WORKSPACE}/seeker/seeker-agent.jar \
-                        -Dseeker.server.url=${SEEKER_SERVER_URL} \
-                        -Dseeker.project.key=${SEEKER_PROJECT_KEY} \
-                        -Dseeker.agent.auto.update=false \
-                        -Dserver.port=${APP_PORT} \
-                        -Dserver.address=0.0.0.0 \
-                        -jar ${webgoatJar} \
-                        > app_webgoat.log 2>&1 &
-                    """
-                    sh startCmd
-                    
-                    echo ">>> WebGoat đang khởi động ngầm. Chuyển sang bước kiểm tra..."
-                }
+            // 3. CRITICAL: Wait for the port to actually free up
+            sh "sleep 5"
+            
+            // Optional: Hard check to see if port is still taken
+            def portStatus = sh(script: "lsof -i:${APP_PORT} || echo 'free'", returnStdout: true).trim()
+            if (portStatus != 'free') {
+                echo "WARNING: Port ${APP_PORT} seems to still be in use. Trying force kill..."
+                sh "fuser -k -9 -n tcp ${APP_PORT} || true"
+                sh "sleep 2"
             }
-        }
+            // -----------------------------
 
+            String startCmd = """
+                nohup java \
+                --add-opens java.base/sun.nio.ch=ALL-UNNAMED \
+                --add-opens java.base/java.io=ALL-UNNAMED \
+                -Xmx2g \
+                -javaagent:${WORKSPACE}/seeker/seeker-agent.jar \
+                -Dseeker.server.url=${SEEKER_SERVER_URL} \
+                -Dseeker.project.key=${SEEKER_PROJECT_KEY} \
+                -Dseeker.agent.auto.update=false \
+                -Dserver.port=${APP_PORT} \
+                -Dserver.address=0.0.0.0 \
+                -jar ${webgoatJar} \
+                > app_webgoat.log 2>&1 &
+            """
+            sh startCmd
+            
+            echo ">>> WebGoat is starting in background..."
+        }
+    }
+}
         stage('4. Deep Health Check') {
             steps {
                 script {
