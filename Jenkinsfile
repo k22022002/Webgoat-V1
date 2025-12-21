@@ -60,7 +60,7 @@ pipeline {
 
                     // THAY ĐỔI: Dùng lệnh 'find' để tìm file thay vì 'ls' cứng nhắc
                     // Lệnh này sẽ tìm file bắt đầu bằng 'webgoat-server' và nằm trong thư mục 'target'
-                    def webgoatJar = sh(script: 'find . -name "webgoat-server*.jar" | grep "target/" | head -n 1', returnStdout: true).trim()
+                    def webgoatJar = sh(script: 'find . -name "webgoat-*.jar" | grep "target/" | head -n 1', returnStdout: true).trim()
                     
                     echo ">>> File jar tìm được: ${webgoatJar}"
 
