@@ -52,38 +52,54 @@ pipeline {
                 }
             }
         }
-
-	stage('3. Run App with IAST (Optimized)') {
+	stage('3. Run App with IAST (Fixed)') {
     steps {
         script {
             echo '--- [Run] Starting WebGoat + Seeker ---'
             
-            // Find the jar
+            // 1. Tìm file JAR
             def webgoatJar = sh(script: 'find target -name "webgoat-*.jar" | head -n 1', returnStdout: true).trim()
             if (webgoatJar == "") { error "No .jar file found!" }
 
-            // --- IMPROVED CLEANUP LOGIC ---
-            echo "Cleaning up old processes on port ${APP_PORT}..."
-            
-            // 1. Try to kill specifically by the port number (requires 'psmisc' package usually)
-            // If fuser is not installed, this line is skipped due to || true
-            sh "fuser -k -n tcp ${APP_PORT} || true"
-            
-            // 2. Fallback: Kill by name
-            sh "pkill -f webgoat || true"
+            // 2. DỌN DẸP TIẾN TRÌNH CŨ (Logic mạnh hơn)
+            echo ">>> [Cleanup] Đang kiểm tra tiến trình chiếm cổng ${APP_PORT}..."
 
-            // 3. CRITICAL: Wait for the port to actually free up
-            sh "sleep 5"
-            
-            // Optional: Hard check to see if port is still taken
-            def portStatus = sh(script: "lsof -i:${APP_PORT} || echo 'free'", returnStdout: true).trim()
-            if (portStatus != 'free') {
-                echo "WARNING: Port ${APP_PORT} seems to still be in use. Trying force kill..."
-                sh "fuser -k -9 -n tcp ${APP_PORT} || true"
-                sh "sleep 2"
+            // Cách 1: Tìm PID bằng lsof (nếu có)
+            // Cách 2: Tìm PID bằng netstat (phổ biến hơn)
+            // Lấy PID ra biến để kill đích danh
+            def checkPidCmd = """
+                pid=\$(lsof -t -i:${APP_PORT} 2>/dev/null || netstat -nlp 2>/dev/null | grep :${APP_PORT} | awk '{print \$7}' | cut -d'/' -f1)
+                echo \$pid
+            """
+            def pid = sh(script: checkPidCmd, returnStdout: true).trim()
+
+            if (pid != "" && pid.isInteger()) {
+                echo ">>> PHÁT HIỆN tiến trình (PID: ${pid}) đang chiếm cổng. Đang cưỡng chế dừng (Kill -9)..."
+                sh "kill -9 ${pid} || true"
+            } else {
+                echo ">>> Không tìm thấy PID cụ thể trên cổng ${APP_PORT}. Chạy rà soát tổng thể..."
             }
-            // -----------------------------
 
+            // Phòng hờ: Kill theo tên file (nếu PID không tìm ra nhưng process vẫn treo)
+            sh "pkill -f webgoat || true"
+            sh "pkill -f ${webgoatJar} || true"
+
+            // QUAN TRỌNG: Đợi hệ điều hành giải phóng cổng hoàn toàn
+            echo ">>> Đợi 5 giây để cổng được giải phóng..."
+            sh "sleep 5"
+
+            // 3. KIỂM TRA LẦN CUỐI TRƯỚC KHI CHẠY
+            // Nếu vẫn còn process chiếm cổng thì báo lỗi ngay lập tức để không start đè
+            def finalCheck = sh(script: "netstat -an | grep :${APP_PORT} || echo 'OK'", returnStdout: true).trim()
+            if (finalCheck != 'OK' && finalCheck != '') {
+                echo "WARNING: Cổng ${APP_PORT} vẫn chưa thực sự rảnh. Log netstat: ${finalCheck}"
+            }
+
+            // 4. KHỞI ĐỘNG ỨNG DỤNG
+            echo ">>> Đang khởi động WebGoat trên cổng ${APP_PORT}..."
+            
+            // Sử dụng BUILD_ID=dontKillMe để tránh Jenkins tự kill process khi stage kết thúc (nếu cần debug)
+            // Tuy nhiên, với lệnh nohup & chuẩn thì process sẽ chạy nền.
             String startCmd = """
                 nohup java \
                 --add-opens java.base/sun.nio.ch=ALL-UNNAMED \
@@ -100,7 +116,7 @@ pipeline {
             """
             sh startCmd
             
-            echo ">>> WebGoat is starting in background..."
+            echo ">>> Lệnh khởi động đã được thực thi."
         }
     }
 }
