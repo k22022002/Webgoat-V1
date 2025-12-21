@@ -80,26 +80,57 @@ pipeline {
             }
         }
 
-        stage('4. Test & Generate Traffic') {
+	stage('4. Smart Health Check & Test') {
             steps {
                 script {
-                    echo "--- [Test] Sending Requests to Port ${APP_PORT} ---"
+                    echo "--- [Check] Đang chờ WebGoat mở cổng ${APP_PORT} ---"
                     
-                    // Kiểm tra xem process có còn sống không
-                    try {
-                        // Thử kết nối
-                        sh "curl -v --fail http://localhost:${APP_PORT}/WebGoat/login"
-                    } catch (Exception e) {
-                        echo "❌ LỖI: Không kết nối được WebGoat!"
-                        echo "================= APP LOGS (DEBUG) ================="
-                        // QUAN TRỌNG: In nội dung log ra để xem tại sao nó chết
-                        sh "cat app_webgoat.log"
-                        echo "===================================================="
-                        error "Ứng dụng không khởi động được. Xem log ở trên."
+                    // Thời gian chờ tối đa: 5 phút (30 lần x 10 giây)
+                    // Vì quá trình "re-transformation" trong log của bạn rất lâu, nên cần chờ lâu hơn
+                    def maxRetries = 30
+                    def isReady = false
+
+                    for (int i = 1; i <= maxRetries; i++) {
+                        // Thử kết nối tới cổng 8090 (chỉ lấy HTTP Header)
+                        // Nếu kết nối được (200 hoặc 302) nghĩa là WebGoat đã sống dậy sau khi Seeker cài xong
+                        def status = sh(
+                            script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:${APP_PORT}/WebGoat/login || echo 'FAIL'", 
+                            returnStdout: true
+                        ).trim()
+
+                        echo ">>> Lần thử ${i}/${maxRetries}: Trạng thái = ${status}"
+
+                        if (status == '200' || status == '302') {
+                            echo "✅ KẾT NỐI THÀNH CÔNG! WebGoat đã khởi động xong."
+                            isReady = true
+                            break
+                        }
+
+                        // Nếu chưa được thì đợi 10s rồi thử lại
+                        sleep 10
                     }
+
+                    if (!isReady) {
+                        echo "❌ QUÁ THỜI GIAN CHỜ (TIMEOUT)!"
+                        echo "--- In 100 dòng log cuối cùng để kiểm tra lỗi ---"
+                        sh "tail -n 100 app_webgoat.log" 
+                        error "WebGoat không khởi động được sau 5 phút."
+                    }
+                    
+                    // --- BẮT ĐẦU TEST TRAFFIC ---
+                    // Chỉ chạy khi WebGoat đã sẵn sàng
+                    echo "--- [Traffic] Gửi Traffic giả lập để Seeker bắt lỗi ---"
+                    
+                    // Gửi request Login
+                    sh "curl -L -v http://localhost:${APP_PORT}/WebGoat/login"
+                    
+                    // Gửi request Registration (Trang này hay có lỗi XSS)
+                    sh "curl -L -v http://localhost:${APP_PORT}/WebGoat/registration"
+                    
+                    // Gửi thêm một vài request giả lập khác nếu cần
                 }
             }
-        }        
+        }
         stage('5. Quality Gate') {
             steps {
                 script {
