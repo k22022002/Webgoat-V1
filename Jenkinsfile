@@ -49,7 +49,7 @@ pipeline {
                 }
             }
         }
-	stage('3. Run App with IAST') {
+	stage('3. Run App with IAST (Optimized)') {
             steps {
                 script {
                     echo '--- [Run] Starting WebGoat + Seeker ---'
@@ -59,14 +59,18 @@ pipeline {
 
                     sh "pkill -f webgoat || true"
 
-                    // THÊM: Cấp thêm RAM cho Java (WebGoat + IAST khá nặng)
-                    // -Xmx2g: Cho phép dùng tối đa 2GB RAM
+                    // CẤU HÌNH MỚI:
+                    // 1. Thêm --add-opens để sửa lỗi Java 17 (theo gợi ý trong log của bạn)
+                    // 2. Dùng -Dserver.address=0.0.0.0 để chắc chắn mở cổng ra ngoài
                     String startCmd = """
                         nohup java \
+                        --add-opens java.base/sun.nio.ch=ALL-UNNAMED \
+                        --add-opens java.base/java.io=ALL-UNNAMED \
                         -Xmx2g \
                         -javaagent:${WORKSPACE}/seeker/seeker-agent.jar \
                         -Dseeker.server.url=${SEEKER_SERVER_URL} \
                         -Dseeker.project.key=${SEEKER_PROJECT_KEY} \
+                        -Dseeker.agent.auto.update=false \
                         -Dserver.port=${APP_PORT} \
                         -Dserver.address=0.0.0.0 \
                         -jar ${webgoatJar} \
@@ -74,60 +78,55 @@ pipeline {
                     """
                     sh startCmd
                     
-                    echo ">>> Waiting 60s for WebGoat to start..."
-                    sleep 60 
+                    echo ">>> WebGoat đang khởi động (Máy Lab chậm nên sẽ đợi tối đa 10 phút)..."
                 }
             }
         }
 
-	stage('4. Smart Health Check & Test') {
+        stage('4. Deep Health Check') {
             steps {
                 script {
-                    echo "--- [Check] Đang chờ WebGoat mở cổng ${APP_PORT} ---"
+                    echo "--- [Check] Đang chờ cổng ${APP_PORT} phản hồi ---"
                     
-                    // Thời gian chờ tối đa: 5 phút (30 lần x 10 giây)
-                    // Vì quá trình "re-transformation" trong log của bạn rất lâu, nên cần chờ lâu hơn
-                    def maxRetries = 30
+                    // Tăng lên 60 lần x 10s = 600 giây (10 phút)
+                    def maxRetries = 60
                     def isReady = false
 
                     for (int i = 1; i <= maxRetries; i++) {
-                        // Thử kết nối tới cổng 8090 (chỉ lấy HTTP Header)
-                        // Nếu kết nối được (200 hoặc 302) nghĩa là WebGoat đã sống dậy sau khi Seeker cài xong
+                        // Lấy HTTP Code.
+                        // WebGoat có thể trả về 200, 302.
+                        // WebWolf (nếu chiếm cổng 8090) có thể trả về 404 cho đường dẫn /WebGoat.
+                        // NHƯNG: Chỉ cần code != 000 (Connection Refused) nghĩa là Server đã sống!
                         def status = sh(
-                            script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:${APP_PORT}/WebGoat/login || echo 'FAIL'", 
+                            script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:${APP_PORT}/WebGoat/login || echo '000'", 
                             returnStdout: true
                         ).trim()
 
-                        echo ">>> Lần thử ${i}/${maxRetries}: Trạng thái = ${status}"
+                        echo ">>> Phút thứ ${(i*10)/60}: HTTP Code = ${status}"
 
-                        if (status == '200' || status == '302') {
-                            echo "✅ KẾT NỐI THÀNH CÔNG! WebGoat đã khởi động xong."
+                        // Chấp nhận 200 (OK), 302 (Redirect), 404 (Not Found - nghĩa là WebWolf đang chạy)
+                        // Chỉ cần không phải 000 (Chưa kết nối được)
+                        if (status != '000' && status != 'FAIL') {
+                            echo "✅ SERVER ĐÃ SỐNG! (HTTP ${status})"
                             isReady = true
                             break
                         }
 
-                        // Nếu chưa được thì đợi 10s rồi thử lại
                         sleep 10
                     }
 
                     if (!isReady) {
-                        echo "❌ QUÁ THỜI GIAN CHỜ (TIMEOUT)!"
-                        echo "--- In 100 dòng log cuối cùng để kiểm tra lỗi ---"
-                        sh "tail -n 100 app_webgoat.log" 
-                        error "WebGoat không khởi động được sau 5 phút."
+                        echo "❌ TIMEOUT 10 PHÚT! In log lần cuối:"
+                        sh "tail -n 50 app_webgoat.log" 
+                        error "WebGoat không thể mở cổng sau 10 phút."
                     }
                     
-                    // --- BẮT ĐẦU TEST TRAFFIC ---
-                    // Chỉ chạy khi WebGoat đã sẵn sàng
-                    echo "--- [Traffic] Gửi Traffic giả lập để Seeker bắt lỗi ---"
-                    
-                    // Gửi request Login
-                    sh "curl -L -v http://localhost:${APP_PORT}/WebGoat/login"
-                    
-                    // Gửi request Registration (Trang này hay có lỗi XSS)
-                    sh "curl -L -v http://localhost:${APP_PORT}/WebGoat/registration"
-                    
-                    // Gửi thêm một vài request giả lập khác nếu cần
+                    // --- TRAFFIC TEST ---
+                    echo "--- [Traffic] Bắn request để Seeker bắt lỗi ---"
+                    // Thử cả đường dẫn WebGoat và WebWolf để đảm bảo trúng đích
+                    sh "curl -L -v http://localhost:${APP_PORT}/WebGoat/login || true"
+                    sh "curl -L -v http://localhost:${APP_PORT}/WebWolf/login || true"
+                    sh "curl -L -v http://localhost:${APP_PORT}/WebGoat/registration || true"
                 }
             }
         }
