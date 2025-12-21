@@ -7,7 +7,7 @@ pipeline {
     }
 
     environment {
-        APP_PORT = "8080"
+        APP_PORT = "8090"
         SEEKER_SERVER_URL = "http://192.168.12.190:8082"
         SEEKER_PROJECT_KEY = "webgoat-2023-demo"
         // Phiên bản 2023.8 build ra file tên khác một chút, ta dùng * để bắt
