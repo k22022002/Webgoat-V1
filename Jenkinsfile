@@ -49,25 +49,37 @@ pipeline {
                 }
             }
         }
-        stage('3. Run App with IAST') {
+	stage('3. Run App with IAST') {
             steps {
                 script {
                     echo '--- [Run] Starting WebGoat + Seeker ---'
                     
-                    def webgoatJar = sh(script: "ls \${JAR_PATTERN} | head -n 1", returnStdout: true).trim()
-                    if (!webgoatJar) { error "Không tìm thấy file .jar để chạy!" }
+                    // BƯỚC DEBUG: In ra danh sách tất cả file .jar tìm thấy để kiểm tra
+                    echo "--- DEBUG: Tìm kiếm các file .jar trong thư mục ---"
+                    sh "find . -name '*.jar' || true"
 
+                    // THAY ĐỔI: Dùng lệnh 'find' để tìm file thay vì 'ls' cứng nhắc
+                    // Lệnh này sẽ tìm file bắt đầu bằng 'webgoat-server' và nằm trong thư mục 'target'
+                    def webgoatJar = sh(script: 'find . -name "webgoat-server*.jar" | grep "target/" | head -n 1', returnStdout: true).trim()
+                    
+                    echo ">>> File jar tìm được: ${webgoatJar}"
+
+                    if (webgoatJar == "") {
+                        error "Vẫn không tìm thấy file .jar! Hãy kiểm tra lại bước Build xem có lỗi không."
+                    }
+
+                    // Kill process cũ
                     sh "pkill -f webgoat || true"
 
-                    // WebGoat 2023.8 chạy tốt trên Java 17
+                    // Chạy ứng dụng
                     String startCmd = """
                         nohup java \
-                        -javaagent:\${WORKSPACE}/seeker/seeker-agent.jar \
-                        -Dseeker.server.url=\${SEEKER_SERVER_URL} \
-                        -Dseeker.project.key=\${SEEKER_PROJECT_KEY} \
-                        -Dserver.port=\${APP_PORT} \
+                        -javaagent:${WORKSPACE}/seeker/seeker-agent.jar \
+                        -Dseeker.server.url=${SEEKER_SERVER_URL} \
+                        -Dseeker.project.key=${SEEKER_PROJECT_KEY} \
+                        -Dserver.port=${APP_PORT} \
                         -Dserver.address=0.0.0.0 \
-                        -jar \${webgoatJar} \
+                        -jar ${webgoatJar} \
                         > app_webgoat.log 2>&1 &
                     """
                     sh startCmd
@@ -77,7 +89,6 @@ pipeline {
                 }
             }
         }
-
         stage('4. Test & Generate Traffic') {
             steps {
                 script {
