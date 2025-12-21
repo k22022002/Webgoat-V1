@@ -31,11 +31,11 @@ pipeline {
                     sh "rm -rf seeker installer.sh || true"
 
                     withCredentials([string(credentialsId: 'seeker-access-token', variable: 'SEEKER_ACCESS_TOKEN')]) {
-                        // SỬ DỤNG 3 DẤU NHÁY ĐƠN (''')
-                        // Điều này ngăn Jenkins can thiệp vào code, để Shell tự xử lý biến $SEEKER_ACCESS_TOKEN
+                        // LƯU Ý QUAN TRỌNG: 
+                        // 1. Dùng 3 dấu nháy đơn (''') để dùng biến môi trường $SEEKER_ACCESS_TOKEN của Shell
+                        // 2. Tuyệt đối KHÔNG xuống dòng ở giữa đường dẫn URL
                         sh '''
-                            curl -k -fSL -o installer.sh \
-                            "http://192.168.12.190:8082/rest/api/latest/installers/agents/scripts/JAVA?osFamily=LINUX&downloadWith=curl&webServer=ALL&flavor=DEFAULT&accessToken=$SEEKER_ACCESS_TOKEN"
+                            curl -k -SL -o installer.sh "http://192.168.12.190:8082/rest/api/latest/installers/agents/scripts/JAVA?osFamily=LINUX&downloadWith=curl&webServer=ALL&flavor=DEFAULT&accessToken=$SEEKER_ACCESS_TOKEN"
                             
                             chmod +x installer.sh
                             sh installer.sh
@@ -43,7 +43,9 @@ pipeline {
                         
                         // Kiểm tra kết quả
                         if (!fileExists('seeker/seeker-agent.jar')) {
-                            error "Lỗi: Không thấy file seeker-agent.jar. Có thể Token sai hoặc Server lỗi."
+                            // Nếu lỗi, in ra nội dung file tải về để debug (thường chứa thông báo lỗi của Server)
+                            sh "cat installer.sh || true"
+                            error "Lỗi: Không tải được Agent. Xem log ở trên."
                         }
                     }
                 }
