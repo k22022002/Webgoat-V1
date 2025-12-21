@@ -25,24 +25,35 @@ pipeline {
             }
         }
 
-        stage('2. Setup Seeker Agent') {
+	stage('2. Setup Seeker Agent') {
             steps {
                 script {
                     echo '--- [Agent] Downloading Synopsys Seeker Agent ---'
+                    
+                    // Xóa thư mục cũ
+                    sh "rm -rf seeker installer.sh || true"
+
                     withCredentials([string(credentialsId: 'seeker-access-token', variable: 'SEEKER_ACCESS_TOKEN')]) {
-                        sh "rm -rf seeker || true"
+                        // CÁCH SỬA:
+                        // 1. Dùng curl -o để tải file về đĩa trước (dễ debug hơn)
+                        // 2. Dùng ngoặc kép "..." cho lệnh sh để Jenkins tự điền biến vào
                         sh """
-                            sh -c "\$(curl -k -X GET -fsSL --header 'Accept: application/x-sh' \
-                            '${SEEKER_SERVER_URL}/rest/api/latest/installers/agents/scripts/JAVA?osFamily=LINUX&downloadWith=curl&webServer=ALL&flavor=DEFAULT&accessToken=\${SEEKER_ACCESS_TOKEN}')"
+                            curl -k -fSL -o installer.sh \
+                            "${SEEKER_SERVER_URL}/rest/api/latest/installers/agents/scripts/JAVA?osFamily=LINUX&downloadWith=curl&webServer=ALL&flavor=DEFAULT&accessToken=${SEEKER_ACCESS_TOKEN}"
                         """
+                        
+                        // 3. Cấp quyền và chạy file cài đặt
+                        sh "chmod +x installer.sh"
+                        sh "sh installer.sh"
+
+                        // 4. Kiểm tra kết quả
                         if (!fileExists('seeker/seeker-agent.jar')) {
-                            error "Lỗi: Download Agent thất bại!"
+                            error "Lỗi: File seeker-agent.jar không tồn tại sau khi chạy script!"
                         }
                     }
                 }
             }
         }
-
         stage('3. Run App with IAST') {
             steps {
                 script {
