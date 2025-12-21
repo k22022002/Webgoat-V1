@@ -24,31 +24,26 @@ pipeline {
                 }
             }
         }
-
 	stage('2. Setup Seeker Agent') {
             steps {
                 script {
                     echo '--- [Agent] Downloading Synopsys Seeker Agent ---'
-                    
-                    // Xóa thư mục cũ
                     sh "rm -rf seeker installer.sh || true"
 
                     withCredentials([string(credentialsId: 'seeker-access-token', variable: 'SEEKER_ACCESS_TOKEN')]) {
-                        // CÁCH SỬA:
-                        // 1. Dùng curl -o để tải file về đĩa trước (dễ debug hơn)
-                        // 2. Dùng ngoặc kép "..." cho lệnh sh để Jenkins tự điền biến vào
-                        sh """
+                        // SỬ DỤNG 3 DẤU NHÁY ĐƠN (''')
+                        // Điều này ngăn Jenkins can thiệp vào code, để Shell tự xử lý biến $SEEKER_ACCESS_TOKEN
+                        sh '''
                             curl -k -fSL -o installer.sh \
-                            "${SEEKER_SERVER_URL}/rest/api/latest/installers/agents/scripts/JAVA?osFamily=LINUX&downloadWith=curl&webServer=ALL&flavor=DEFAULT&accessToken=${SEEKER_ACCESS_TOKEN}"
-                        """
+                            "http://192.168.12.190:8082/rest/api/latest/installers/agents/scripts/JAVA?osFamily=LINUX&downloadWith=curl&webServer=ALL&flavor=DEFAULT&accessToken=$SEEKER_ACCESS_TOKEN"
+                            
+                            chmod +x installer.sh
+                            sh installer.sh
+                        '''
                         
-                        // 3. Cấp quyền và chạy file cài đặt
-                        sh "chmod +x installer.sh"
-                        sh "sh installer.sh"
-
-                        // 4. Kiểm tra kết quả
+                        // Kiểm tra kết quả
                         if (!fileExists('seeker/seeker-agent.jar')) {
-                            error "Lỗi: File seeker-agent.jar không tồn tại sau khi chạy script!"
+                            error "Lỗi: Không thấy file seeker-agent.jar. Có thể Token sai hoặc Server lỗi."
                         }
                     }
                 }
