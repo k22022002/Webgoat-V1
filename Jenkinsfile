@@ -53,117 +53,108 @@ pipeline {
             }
         }
 	stage('3. Run App with IAST (Fixed)') {
-    steps {
-        script {
-            echo '--- [Run] Starting WebGoat + Seeker ---'
-            
-            // 1. Tìm file JAR
-            def webgoatJar = sh(script: 'find target -name "webgoat-*.jar" | head -n 1', returnStdout: true).trim()
-            if (webgoatJar == "") { error "No .jar file found!" }
+            steps {
+                script {
+                    echo '--- [Run] Starting WebGoat + Seeker ---'
+                    
+                    // 1. Tìm file JAR (SỬA: WebGoat main build ra trong module webgoat-server)
+                    // Lưu ý: Tìm trong webgoat-server/target
+                    def webgoatJar = sh(script: 'find webgoat-server/target -name "webgoat-*.jar" | grep -v "sources" | head -n 1', returnStdout: true).trim()
+                    
+                    if (webgoatJar == "") { 
+                        // Fallback: Nếu không tìm thấy, thử tìm rộng hơn nhưng ưu tiên file server
+                        echo "Không tìm thấy trong webgoat-server, thử tìm toàn cục..."
+                        webgoatJar = sh(script: 'find . -name "webgoat-*.jar" | grep "webgoat-server" | grep -v "sources" | head -n 1', returnStdout: true).trim()
+                    }
 
-            // 2. DỌN DẸP TIẾN TRÌNH CŨ (Logic mạnh hơn)
-            echo ">>> [Cleanup] Đang kiểm tra tiến trình chiếm cổng ${APP_PORT}..."
+                    if (webgoatJar == "") { error "ERROR: Không tìm thấy file .jar thực thi của WebGoat!" }
+                    echo ">>> Found JAR: ${webgoatJar}"
 
-            // Cách 1: Tìm PID bằng lsof (nếu có)
-            // Cách 2: Tìm PID bằng netstat (phổ biến hơn)
-            // Lấy PID ra biến để kill đích danh
-            def checkPidCmd = """
-                pid=\$(lsof -t -i:${APP_PORT} 2>/dev/null || netstat -nlp 2>/dev/null | grep :${APP_PORT} | awk '{print \$7}' | cut -d'/' -f1)
-                echo \$pid
-            """
-            def pid = sh(script: checkPidCmd, returnStdout: true).trim()
+                    // 2. DỌN DẸP TIẾN TRÌNH CŨ
+                    echo ">>> [Cleanup] Đang kiểm tra tiến trình chiếm cổng ${APP_PORT}..."
+                    
+                    // Tìm PID đang chiếm port
+                    def checkPidCmd = "lsof -t -i:${APP_PORT} || true"
+                    def pid = sh(script: checkPidCmd, returnStdout: true).trim()
 
-            if (pid != "" && pid.isInteger()) {
-                echo ">>> PHÁT HIỆN tiến trình (PID: ${pid}) đang chiếm cổng. Đang cưỡng chế dừng (Kill -9)..."
-                sh "kill -9 ${pid} || true"
-            } else {
-                echo ">>> Không tìm thấy PID cụ thể trên cổng ${APP_PORT}. Chạy rà soát tổng thể..."
+                    if (pid != "" && pid.isInteger()) {
+                        echo ">>> Kill process ID: ${pid}"
+                        sh "kill -9 ${pid} || true"
+                    }
+                    
+                    // Kill theo tên để chắc chắn
+                    sh "pkill -f webgoat || true"
+                    sh "sleep 5" // Đợi giải phóng port
+
+                    // 3. KHỞI ĐỘNG ỨNG DỤNG
+                    echo ">>> Đang khởi động WebGoat trên cổng ${APP_PORT}..."
+                    
+                    // QUAN TRỌNG: 
+                    // 1. -Dserver.servlet.context-path=/WebGoat : Để đảm bảo URL là /WebGoat/login (như Stage 4 mong đợi)
+                    // 2. -Dserver.address=0.0.0.0 : Để cho phép truy cập từ bên ngoài (IP 192.168...)
+                    String startCmd = """
+                        nohup java \
+                        --add-opens java.base/sun.nio.ch=ALL-UNNAMED \
+                        --add-opens java.base/java.io=ALL-UNNAMED \
+                        -Xmx2g \
+                        -javaagent:${WORKSPACE}/seeker/seeker-agent.jar \
+                        -Dseeker.server.url=${SEEKER_SERVER_URL} \
+                        -Dseeker.project.key=${SEEKER_PROJECT_KEY} \
+                        -Dseeker.agent.auto.update=false \
+                        -Dserver.port=${APP_PORT} \
+                        -Dserver.address=0.0.0.0 \
+                        -Dserver.servlet.context-path=/WebGoat \
+                        -jar ${webgoatJar} \
+                        > app_webgoat.log 2>&1 &
+                    """
+                    sh startCmd
+                    
+                    echo ">>> Lệnh khởi động đã được thực thi."
+                }
             }
-
-            // Phòng hờ: Kill theo tên file (nếu PID không tìm ra nhưng process vẫn treo)
-            sh "pkill -f webgoat || true"
-            sh "pkill -f ${webgoatJar} || true"
-
-            // QUAN TRỌNG: Đợi hệ điều hành giải phóng cổng hoàn toàn
-            echo ">>> Đợi 5 giây để cổng được giải phóng..."
-            sh "sleep 5"
-
-            // 3. KIỂM TRA LẦN CUỐI TRƯỚC KHI CHẠY
-            // Nếu vẫn còn process chiếm cổng thì báo lỗi ngay lập tức để không start đè
-            def finalCheck = sh(script: "netstat -an | grep :${APP_PORT} || echo 'OK'", returnStdout: true).trim()
-            if (finalCheck != 'OK' && finalCheck != '') {
-                echo "WARNING: Cổng ${APP_PORT} vẫn chưa thực sự rảnh. Log netstat: ${finalCheck}"
-            }
-
-            // 4. KHỞI ĐỘNG ỨNG DỤNG
-            echo ">>> Đang khởi động WebGoat trên cổng ${APP_PORT}..."
-            
-            // Sử dụng BUILD_ID=dontKillMe để tránh Jenkins tự kill process khi stage kết thúc (nếu cần debug)
-            // Tuy nhiên, với lệnh nohup & chuẩn thì process sẽ chạy nền.
-            String startCmd = """
-                nohup java \
-                --add-opens java.base/sun.nio.ch=ALL-UNNAMED \
-                --add-opens java.base/java.io=ALL-UNNAMED \
-                -Xmx2g \
-                -javaagent:${WORKSPACE}/seeker/seeker-agent.jar \
-                -Dseeker.server.url=${SEEKER_SERVER_URL} \
-                -Dseeker.project.key=${SEEKER_PROJECT_KEY} \
-                -Dseeker.agent.auto.update=false \
-                -Dserver.port=${APP_PORT} \
-                -Dserver.address=0.0.0.0 \
-                -jar ${webgoatJar} \
-                > app_webgoat.log 2>&1 &
-            """
-            sh startCmd
-            
-            echo ">>> Lệnh khởi động đã được thực thi."
         }
-    }
-}
+
         stage('4. Deep Health Check') {
             steps {
                 script {
                     echo "--- [Check] Đang chờ cổng ${APP_PORT} phản hồi ---"
                     
-                    // Tăng thời gian chờ lên 10 phút (60 lần x 10s) phòng trường hợp máy chậm
-                    def maxRetries = 60
+                    def maxRetries = 30 // 30 lần x 10s = 5 phút
                     def isReady = false
 
                     for (int i = 1; i <= maxRetries; i++) {
-                        // Lấy HTTP Code. Nếu lỗi connection refused trả về 000
+                        // SỬA: Dùng 127.0.0.1 để check nội bộ trên agent cho nhanh và ổn định
                         def status = sh(
-                            script: "curl -s -o /dev/null -w '%{http_code}' http://192.168.12.190:${APP_PORT}/WebGoat/login || echo '000'", 
+                            script: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${APP_PORT}/WebGoat/login || echo '000'", 
                             returnStdout: true
                         ).trim()
 
-                        echo ">>> [Wait ${(i*10)}s] HTTP Code: ${status}"
+                        echo ">>> [Wait ${(i*10)}s] Check Localhost: ${status}"
 
-                        // Chấp nhận 200 (OK), 302 (Redirect)
-                        // 404 đôi khi xuất hiện lúc App chưa load xong context, ta đợi thêm chút
                         if (status == '200' || status == '302') {
                             echo "✅ SERVER ĐÃ SỐNG! (HTTP ${status})"
                             isReady = true
                             break
                         }
-
                         sleep 10
                     }
 
                     if (!isReady) {
-                        echo "❌ TIMEOUT! In log lần cuối để debug:"
+                        echo "❌ TIMEOUT! In 50 dòng log cuối cùng:"
                         sh "tail -n 50 app_webgoat.log || true" 
-                        error "WebGoat không thể mở cổng sau 10 phút."
+                        error "WebGoat không khởi động được."
                     }
                     
-                    // --- TRAFFIC TEST ---
-                    echo "--- [Traffic] Bắn request để Seeker bắt lỗi ---"
-                    // Thử cả đường dẫn WebGoat và WebWolf
-                    sh "curl -L -v http://192.168.12.190:${APP_PORT}/WebGoat/login || true"
-                    sh "curl -L -v http://192.168.12.190:${APP_PORT}/WebGoat/registration || true"
+                    // --- TRAFFIC TEST (Gửi request vào IP LAN để Seeker ghi nhận đúng luồng network) ---
+                    echo "--- [Traffic] Bắn request qua IP LAN (${SEEKER_SERVER_URL} context) ---"
+                    // IP máy Jenkins mà Seeker Server nhìn thấy
+                    def jenkinsIP = "192.168.12.190" 
+                    
+                    sh "curl -L -v http://${jenkinsIP}:${APP_PORT}/WebGoat/login || true"
+                    sh "curl -L -v http://${jenkinsIP}:${APP_PORT}/WebGoat/registration || true"
                 }
             }
         }
-
         stage('5. Quality Gate') {
             steps {
                 script {
