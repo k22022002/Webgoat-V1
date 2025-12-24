@@ -57,21 +57,22 @@ pipeline {
                 script {
                     echo '--- [Run] Starting WebGoat + Seeker ---'
                     
+                    // Tìm file JAR (giữ nguyên)
                     def webgoatJar = sh(script: 'find target -name "webgoat-*.jar" | grep -v "original" | head -n 1', returnStdout: true).trim()
                     if (webgoatJar == "") { 
                         webgoatJar = sh(script: 'find . -name "webgoat-*.jar" | grep -v "original" | head -n 1', returnStdout: true).trim()
                     }
-                    if (webgoatJar == "") { error "ERROR: Không tìm thấy file .jar!" }
 
-                    // Dọn dẹp cổng cũ
+                    // Kill process cũ
                     sh "pkill -f webgoat || true"
-                    sh "sleep 5"
+                    sh "sleep 2"
 
+                    // --- SỬA LỖI BẢO MẬT & KHỞI ĐỘNG ---
                     withCredentials([string(credentialsId: 'seeker-agent-token', variable: 'SEEKER_ACCESS_TOKEN')]) {
-                        echo ">>> Đang khởi động WebGoat trên cổng ${APP_PORT}..."
-                        
-                        // --- SỬA ĐỔI: Thêm lại các tham số cấu hình trực tiếp ---
-                        String startCmd = """
+                        // Dùng ngoặc đơn ''' cho block sh để tránh lỗi "String interpolation"
+                        // Biến $SEEKER_ACCESS_TOKEN sẽ được shell lấy từ env do withCredentials cung cấp
+                        sh '''
+                            echo ">>> Đang khởi động WebGoat..."
                             nohup java \\
                             --add-opens java.base/sun.nio.ch=ALL-UNNAMED \\
                             --add-opens java.base/java.io=ALL-UNNAMED \\
@@ -79,57 +80,60 @@ pipeline {
                             -javaagent:${WORKSPACE}/seeker/seeker-agent.jar \\
                             -Dseeker.server.url=${SEEKER_SERVER_URL} \\
                             -Dseeker.project.key=${SEEKER_PROJECT_KEY} \\
-                            -Dseeker.agent.debug=true \\
                             -Dserver.port=${APP_PORT} \\
                             -Dserver.address=0.0.0.0 \\
                             -Dserver.servlet.context-path=/WebGoat \\
-                            -jar ${webgoatJar} \\
-                            > app_webgoat.log 2>&1 &
-                        """
-                        
-                        // Vẫn giữ export Token
-                        sh "export SEEKER_ACCESS_TOKEN=${SEEKER_ACCESS_TOKEN} && ${startCmd}"
-                        echo ">>> Lệnh khởi động đã được thực thi."
+                            -jar ''' + webgoatJar + ''' > app_webgoat.log 2>&1 &
+                        '''
+                        // Lưu ý: Đoạn + webgoatJar + là nối chuỗi Groovy vào giữa command shell
                     }
                 }
             }
         }
-	stage('4. Deep Health Check') {
+
+        stage('4. Deep Health Check') {
             steps {
                 script {
-                    echo "--- [Check] Đang chờ WebGoat khởi động ---"
-                    // ... (Giữ nguyên phần check WebGoat port 200 như cũ) ...
+                    echo "--- [Check] Đang chờ WebGoat khởi động (Max 5 phút) ---"
                     
-                    // --- THÊM: Kiểm tra log Agent kết nối ---
-                    echo "--- [Check] Kiểm tra kết nối Seeker Agent ---"
-                    int agentRetries = 0
-                    while (agentRetries < 20) {
-                        // Grep tìm dòng "Connected to Seeker"
-                        def agentLog = sh(script: "grep -i 'Connected to Seeker' app_webgoat.log || echo 'waiting'", returnStdout: true).trim()
-                        if (agentLog != 'waiting') {
-                            echo "✅ Seeker Agent đã kết nối thành công!"
+                    // Vòng lặp kiểm tra cổng 8090 đã mở chưa (QUAN TRỌNG)
+                    def isStarted = false
+                    for (int i = 0; i < 30; i++) { // Thử 30 lần, mỗi lần 10s = 5 phút
+                        // Check xem cổng 8090 đã listen chưa
+                        def checkPort = sh(script: "netstat -an | grep ${APP_PORT} | grep LISTEN || echo 'not_listening'", returnStdout: true).trim()
+                        
+                        // Hoặc check đơn giản bằng curl
+                        def status = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${APP_PORT}/WebGoat/login || echo '000'", returnStdout: true).trim()
+
+                        if (status == '200' || status == '302') {
+                            echo "✅ WebGoat đã Online! (Status: ${status})"
+                            isStarted = true
                             break
                         }
-                        echo ">>> Đang chờ Agent kết nối... (${agentRetries}/20)"
-                        sleep 5
-                        agentRetries++
-                    }
-                    
-                    if (agentRetries >= 20) {
-                         echo "⚠️ CẢNH BÁO: Agent chưa log 'Connected'. Kiểm tra debug log:"
-                         sh "cat app_webgoat.log | grep -i 'seeker' | tail -n 20"
-                         // Không error ngay để cho traffic chạy thử
+                        
+                        echo ">>> [Wait ${i*10}s] Đang chờ ứng dụng khởi động... (Status: ${status})"
+                        
+                        // In ra 2 dòng log cuối để xem tiến độ
+                        sh "tail -n 2 app_webgoat.log || true"
+                        sleep 10
                     }
 
-                    // --- TRAFFIC TEST (Giữ nguyên) ---
-                    echo "--- [Traffic] Bắn Request Đăng Nhập ---"
-                    sleep 5
+                    if (!isStarted) {
+                        echo "❌ TIMEOUT: WebGoat không khởi động được sau 5 phút."
+                        sh "cat app_webgoat.log"
+                        error "Application Start Timeout"
+                    }
+
+                    // --- TRAFFIC TEST ---
+                    echo "--- [Traffic] Ứng dụng đã lên, bắt đầu bắn Traffic ---"
+                    // Bây giờ bắn curl mới an toàn
                     sh """
                         curl -s -X POST http://127.0.0.1:${APP_PORT}/WebGoat/login \\
                         -d "username=admin&password=password" \\
                         -H "Content-Type: application/x-www-form-urlencoded"
                     """
-                    echo ">>> Traffic done. Chờ đồng bộ (15s)..."
+                    
+                    echo ">>> Traffic đã gửi thành công. Chờ Agent đồng bộ dữ liệu (15s)..."
                     sleep 15
                 }
             }
