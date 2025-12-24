@@ -167,7 +167,7 @@ pipeline {
                             
                             curl -s -k -o response_body.json -w "%{http_code}" \
                                 -X GET "$SEEKER_SERVER_URL/rest/api/latest/projects/$SEEKER_PROJECT_KEY/compliance-status" \
-                                -H "Authorization: Bearer $SEEKER_API_TOKEN" \
+                                -H "Authorization: $SEEKER_API_TOKEN" \
                                 -H "Accept: application/json" > status_code.txt
 
                             HTTP_CODE=$(cat status_code.txt)
