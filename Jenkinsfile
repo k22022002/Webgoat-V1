@@ -136,22 +136,53 @@ pipeline {
             }
         }
 
-        stage('5. Quality Gate') {
+	stage('5. Quality Gate') {
             steps {
                 script {
-                      echo '--- [Gate] Kiểm tra kết quả Seeker ---'
-                      sleep 15 
-                      withCredentials([string(credentialsId: 'seeker-access-token', variable: 'SEEKER_ACCESS_TOKEN')]) {
-                        def complianceStatus = sh(
-                            script: """
-                                curl -s -k -X GET "${SEEKER_SERVER_URL}/rest/api/latest/projects/${SEEKER_PROJECT_KEY}/compliance-status" \
-                                -H "Authorization: Bearer ${SEEKER_ACCESS_TOKEN}" \
-                                -H "Accept: application/json"
-                            """, 
-                            returnStdout: true
-                        ).trim()
-                        echo ">>> Trạng thái bảo mật: ${complianceStatus}"
-                      }
+                    echo '--- [Gate] Kiểm tra kết quả Seeker ---'
+                    sleep 30 // Chờ 30s cho Agent đồng bộ dữ liệu
+                    
+                    withCredentials([string(credentialsId: 'seeker-access-token', variable: 'SEEKER_ACCESS_TOKEN')]) {
+                        // QUAN TRỌNG: Dùng ''' (nháy đơn) thay vì """ (nháy kép)
+                        // Lúc này $SEEKER_ACCESS_TOKEN là biến môi trường, an toàn tuyệt đối.
+                        sh '''
+                            echo ">>> Đang gọi API kiểm tra..."
+                            
+                            # Lưu ý: Trong block nháy đơn này, các biến environment {} ở đầu file
+                            # cũng được gọi bằng $VAR (ví dụ $SEEKER_SERVER_URL)
+                            
+                            RESPONSE=$(curl -s -k -w "%{http_code}" -X GET "$SEEKER_SERVER_URL/rest/api/latest/projects/$SEEKER_PROJECT_KEY/compliance-status" \
+                                -H "Authorization: Bearer $SEEKER_ACCESS_TOKEN" \
+                                -H "Accept: application/json")
+
+                            # Cắt chuỗi để lấy HTTP Code (3 ký tự cuối)
+                            HTTP_CODE=${RESPONSE: -3}
+                            # Lấy nội dung JSON (trừ 3 ký tự cuối)
+                            BODY=${RESPONSE:0:${#RESPONSE}-3}
+
+                            echo ">>> HTTP Code: $HTTP_CODE"
+                            echo ">>> Response Body: $BODY"
+
+                            if [ "$HTTP_CODE" == "404" ]; then
+                                echo "❌ ERROR: Không tìm thấy Project Key ($SEEKER_PROJECT_KEY) trên Server."
+                                echo "--- DEBUG: Danh sách các Project đang có trên Seeker ---"
+                                
+                                # Lệnh debug để bạn xem tên project đúng là gì
+                                curl -s -k -X GET "$SEEKER_SERVER_URL/rest/api/latest/projects" \
+                                    -H "Authorization: Bearer $SEEKER_ACCESS_TOKEN" \
+                                    -H "Accept: application/json"
+                                    
+                                echo "" # Xuống dòng cho đẹp
+                                exit 1
+                            elif [ "$HTTP_CODE" != "200" ]; then
+                                echo "❌ API Error: $HTTP_CODE"
+                                exit 1
+                            else
+                                echo "✅ Thành công! Trạng thái bảo mật:"
+                                echo "$BODY"
+                            fi
+                        '''
+                    }
                 }
             }
         }
