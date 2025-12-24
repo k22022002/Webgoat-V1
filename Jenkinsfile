@@ -24,25 +24,49 @@ pipeline {
             }
         }
 
-        stage('2. Get Seeker Attacher') {
+	stage('2. Get Seeker Attacher') {
             steps {
                 script {
                     echo '--- [Agent] Downloading Seeker Attacher ---'
                     withCredentials([string(credentialsId: 'seeker-agent-token', variable: 'SEEKER_AGENT_TOKEN')]) {
-                        // Thay đổi: Tải seeker-attacher.jar thay vì installer.sh
-                        // API chuẩn của Seeker để tải Attacher Jar
-                        sh """
-                            curl -k -SL -o seeker-attacher.jar "${SEEKER_SERVER_URL}/rest/api/latest/installers/agents/java/attacher?accessToken=${SEEKER_AGENT_TOKEN}"
-                        """
-                        
-                        if (!fileExists('seeker-attacher.jar')) {
-                            error "❌ Không tải được seeker-attacher.jar. Kiểm tra lại URL hoặc Token."
+                        // 1. Xóa file cũ để đảm bảo sạch sẽ
+                        sh "rm -f seeker-attacher.jar"
+
+                        // 2. Thử tải file
+                        // -f: Fail silently on HTTP errors (để script catch được lỗi)
+                        // -L: Follow redirects
+                        // -v: Verbose để xem log kết nối nếu lỗi
+                        try {
+                            sh """
+                                curl -f -L -v -o seeker-attacher.jar "${SEEKER_SERVER_URL}/rest/api/latest/installers/agents/java/attacher?accessToken=${SEEKER_AGENT_TOKEN}"
+                            """
+                        } catch (Exception e) {
+                            echo "❌ LỖI DOWNLOAD: Curl không tải được file. Có thể sai URL hoặc Token."
+                            // Nếu file tồn tại (là file lỗi), in nội dung ra để xem Server báo gì
+                            if (fileExists('seeker-attacher.jar')) {
+                                echo ">>> Nội dung file lỗi tải về:"
+                                sh "cat seeker-attacher.jar"
+                            }
+                            error "Download Failed"
+                        }
+
+                        // 3. Kiểm tra xem file tải về có đúng là ZIP/JAR không
+                        // Lệnh 'file' trên Linux sẽ cho biết loại file
+                        def fileType = sh(script: "file seeker-attacher.jar", returnStdout: true).trim()
+                        echo ">>> Loại file tải về: ${fileType}"
+
+                        if (!fileType.contains("Zip archive") && !fileType.contains("Java archive") && !fileType.contains("JAR")) {
+                            echo "❌ FILE HỎNG: File tải về không phải là file JAR hợp lệ."
+                            echo ">>> Nội dung thực tế của file:"
+                            sh "cat seeker-attacher.jar"
+                            error "Invalid Jar File"
+                        } else {
+                            echo "✅ File JAR hợp lệ. Sẵn sàng Attach."
                         }
                     }
                 }
             }
         }
-
         stage('3. Run App & Attach Agent') {
             steps {
                 script {
