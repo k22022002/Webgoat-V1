@@ -104,13 +104,10 @@ pipeline {
             steps {
                 script {
                     echo "--- [Check] Đang chờ WebGoat khởi động ---"
-                    // Tăng số lần thử lên 90 lần (90 * 10s = 900s = 15 phút)
-                    // Vì log cho thấy app mất hơn 5 phút (318s) mới lên
                     def maxRetries = 90 
                     def isReady = false
 
                     for (int i = 1; i <= maxRetries; i++) {
-                        // Check localhost 127.0.0.1
                         def status = sh(
                             script: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${APP_PORT}/WebGoat/login || echo '000'", 
                             returnStdout: true
@@ -127,17 +124,27 @@ pipeline {
                     }
 
                     if (!isReady) {
-                        echo "❌ TIMEOUT! WebGoat khởi động quá lâu (> 15 phút)."
-                        echo "--- Log 50 dòng cuối để debug ---"
+                        echo "❌ TIMEOUT! Log 50 dòng cuối:"
                         sh "tail -n 50 app_webgoat.log || true" 
                         error "WebGoat không phản hồi."
                     }
                     
-                    // --- TRAFFIC TEST (IP LAN) ---
-                    // Bước này cực quan trọng để Seeker Agent nhận diện Project
-                    echo "--- [Traffic] Bắn request mẫu để Seeker bắt ---"
-                    sleep 10 // Chờ thêm chút cho chắc
-                    sh "curl -L -v http://192.168.12.190:${APP_PORT}/WebGoat/login || true"
+                    // --- TRAFFIC TEST MỚI (QUAN TRỌNG) ---
+                    echo "--- [Traffic] Bắn Request Đăng Nhập để kích hoạt Agent ---"
+                    sleep 5
+                    
+                    // 1. Request GET (để warm-up)
+                    sh "curl -s -o /dev/null http://192.168.12.190:${APP_PORT}/WebGoat/login"
+                    
+                    // 2. Request POST (Giả lập đăng nhập -> Kích hoạt IAST Agent)
+                    // Agent sẽ thấy dữ liệu đi vào sink và tạo project ngay
+                    sh """
+                        curl -s -X POST http://192.168.12.190:${APP_PORT}/WebGoat/login \\
+                        -d "username=admin&password=password" \\
+                        -H "Content-Type: application/x-www-form-urlencoded"
+                    """
+                    
+                    echo ">>> Traffic đã gửi. Chờ Agent đồng bộ..."
                 }
             }
         }
@@ -145,52 +152,47 @@ pipeline {
             steps {
                 script {
                     echo '--- [Gate] Kiểm tra kết quả Seeker ---'
-                    // Tăng thời gian chờ lên 45s để Agent kịp đồng bộ dữ liệu sau khi WebGoat khởi động
                     sleep 45 
                     
                     withCredentials([string(credentialsId: 'seeker-access-token', variable: 'SEEKER_ACCESS_TOKEN')]) {
                         sh '''
-                            # Xóa file tạm cũ nếu có
                             rm -f response_body.json status_code.txt
 
-                            echo ">>> Đang gọi API kiểm tra trạng thái bảo mật..."
-                            echo ">>> Target: $SEEKER_SERVER_URL/rest/api/latest/projects/$SEEKER_PROJECT_KEY/compliance-status"
+                            echo ">>> Đang gọi API kiểm tra..."
                             
-                            # Kỹ thuật tách Status Code và Body ra 2 nơi để tránh lỗi cú pháp shell
                             curl -s -k -o response_body.json -w "%{http_code}" \
                                 -X GET "$SEEKER_SERVER_URL/rest/api/latest/projects/$SEEKER_PROJECT_KEY/compliance-status" \
                                 -H "Authorization: Bearer $SEEKER_ACCESS_TOKEN" \
                                 -H "Accept: application/json" > status_code.txt
 
-                            # Đọc kết quả vào biến
                             HTTP_CODE=$(cat status_code.txt)
                             BODY=$(cat response_body.json)
 
                             echo ">>> HTTP Code: $HTTP_CODE"
-                            echo ">>> Response Body: $BODY"
-
-                            # Xử lý logic
+                            
                             if [ "$HTTP_CODE" = "200" ]; then
-                                echo "✅ THÀNH CÔNG! Đã lấy được trạng thái bảo mật."
-                                # Kiểm tra xem Project có pass hay fail (dựa vào JSON trả về)
-                                if echo "$BODY" | grep -q '"pass":true'; then
-                                    echo "🎉 CLIMBING THE LADDER: Dự án đạt chuẩn bảo mật!"
-                                else
-                                    echo "⚠️ WARNING: Dự án chưa đạt chuẩn hoặc có lỗ hổng (Compliance = false)."
-                                    # Tùy bạn muốn fail build hay không, nếu muốn fail thì bỏ comment dòng dưới:
-                                    # exit 1 
-                                fi
+                                echo "✅ THÀNH CÔNG! Kết quả:"
+                                echo "$BODY"
                             elif [ "$HTTP_CODE" = "404" ]; then
-                                echo "❌ ERROR (404): Server không tìm thấy dữ liệu cho Project Key: $SEEKER_PROJECT_KEY"
-                                echo "   -> Nguyên nhân 1: Agent chưa kết nối thành công (Check log WebGoat)."
-                                echo "   -> Nguyên nhân 2: Chưa có traffic đi qua WebGoat (Check Stage 4)."
-                                exit 1
-                            elif [ "$HTTP_CODE" = "403" ]; then
-                                echo "❌ ERROR (403): Token bị từ chối quyền truy cập!"
-                                echo "   -> Vui lòng kiểm tra lại 'seeker-access-token' trong Jenkins Credentials."
+                                echo "❌ ERROR (404): Không tìm thấy Project Key: $SEEKER_PROJECT_KEY"
+                                echo "--- DEBUG: Liệt kê các Project đang có trên Server ---"
+                                
+                                # Lệnh này sẽ in ra danh sách các project server đang thấy
+                                curl -s -k -X GET "$SEEKER_SERVER_URL/rest/api/latest/projects" \
+                                    -H "Authorization: Bearer $SEEKER_ACCESS_TOKEN" \
+                                    -H "Accept: application/json"
+                                    
+                                echo ""
+                                echo "--------------------------------------------------------"
+                                
+                                # QUAN TRỌNG: In log kết nối của Agent để xem tại sao nó chưa tạo project
+                                echo "--- DEBUG: Kiểm tra log kết nối của Agent ---"
+                                grep -i "Connected to Seeker" app_webgoat.log || echo "KHÔNG TÌM THẤY LOG KẾT NỐI!"
+                                grep -i "Project" app_webgoat.log || true
+                                
                                 exit 1
                             else
-                                echo "❌ API Error Unknown: $HTTP_CODE"
+                                echo "❌ API Error: $HTTP_CODE"
                                 exit 1
                             fi
                         '''
@@ -199,7 +201,6 @@ pipeline {
             }
         }
     }
-
     post {
         always {
             echo "--- [Cleanup] ---"
