@@ -140,39 +140,39 @@ pipeline {
             steps {
                 script {
                     echo '--- [Gate] Kiểm tra kết quả Seeker ---'
-                    sleep 30 // Chờ 30s cho Agent đồng bộ dữ liệu
+                    sleep 30 
                     
                     withCredentials([string(credentialsId: 'seeker-access-token', variable: 'SEEKER_ACCESS_TOKEN')]) {
-                        // QUAN TRỌNG: Dùng ''' (nháy đơn) thay vì """ (nháy kép)
-                        // Lúc này $SEEKER_ACCESS_TOKEN là biến môi trường, an toàn tuyệt đối.
                         sh '''
+                            # Dùng file tạm để chứa Body phản hồi, tránh lỗi cắt chuỗi
+                            rm -f response_body.json
+
                             echo ">>> Đang gọi API kiểm tra..."
                             
-                            # Lưu ý: Trong block nháy đơn này, các biến environment {} ở đầu file
-                            # cũng được gọi bằng $VAR (ví dụ $SEEKER_SERVER_URL)
-                            
-                            RESPONSE=$(curl -s -k -w "%{http_code}" -X GET "$SEEKER_SERVER_URL/rest/api/latest/projects/$SEEKER_PROJECT_KEY/compliance-status" \
+                            # -o response_body.json: Ghi nội dung JSON vào file
+                            # -w "%{http_code}": Chỉ in ra HTTP Code để gán vào biến
+                            HTTP_CODE=$(curl -s -k -o response_body.json -w "%{http_code}" \
+                                -X GET "$SEEKER_SERVER_URL/rest/api/latest/projects/$SEEKER_PROJECT_KEY/compliance-status" \
                                 -H "Authorization: Bearer $SEEKER_ACCESS_TOKEN" \
                                 -H "Accept: application/json")
 
-                            # Cắt chuỗi để lấy HTTP Code (3 ký tự cuối)
-                            HTTP_CODE=${RESPONSE: -3}
-                            # Lấy nội dung JSON (trừ 3 ký tự cuối)
-                            BODY=${RESPONSE:0:${#RESPONSE}-3}
+                            # Đọc nội dung file ra biến để in log
+                            BODY=$(cat response_body.json)
 
                             echo ">>> HTTP Code: $HTTP_CODE"
                             echo ">>> Response Body: $BODY"
 
-                            if [ "$HTTP_CODE" == "404" ]; then
+                            # So sánh chuỗi trong POSIX sh dùng dấu = (thay vì == của bash)
+                            if [ "$HTTP_CODE" = "404" ]; then
                                 echo "❌ ERROR: Không tìm thấy Project Key ($SEEKER_PROJECT_KEY) trên Server."
                                 echo "--- DEBUG: Danh sách các Project đang có trên Seeker ---"
                                 
-                                # Lệnh debug để bạn xem tên project đúng là gì
+                                # Debug: Liệt kê project để tìm key đúng
                                 curl -s -k -X GET "$SEEKER_SERVER_URL/rest/api/latest/projects" \
                                     -H "Authorization: Bearer $SEEKER_ACCESS_TOKEN" \
                                     -H "Accept: application/json"
                                     
-                                echo "" # Xuống dòng cho đẹp
+                                echo "" 
                                 exit 1
                             elif [ "$HTTP_CODE" != "200" ]; then
                                 echo "❌ API Error: $HTTP_CODE"
