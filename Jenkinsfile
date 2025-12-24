@@ -100,23 +100,26 @@ pipeline {
             }
         }
 
-        stage('4. Deep Health Check') {
+	stage('4. Deep Health Check') {
             steps {
                 script {
                     echo "--- [Check] Đang chờ WebGoat khởi động ---"
-                    def maxRetries = 30 
+                    // Tăng số lần thử lên 90 lần (90 * 10s = 900s = 15 phút)
+                    // Vì log cho thấy app mất hơn 5 phút (318s) mới lên
+                    def maxRetries = 90 
                     def isReady = false
 
                     for (int i = 1; i <= maxRetries; i++) {
-                        // Check localhost 127.0.0.1 cho ổn định
+                        // Check localhost 127.0.0.1
                         def status = sh(
                             script: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${APP_PORT}/WebGoat/login || echo '000'", 
                             returnStdout: true
                         ).trim()
 
-                        echo ">>> [Wait ${(i*10)}s] Status: ${status}"
+                        echo ">>> [Wait ${(i*10)}s / 900s] Status: ${status}"
+                        
                         if (status == '200' || status == '302') {
-                            echo "✅ SERVER ONLINE!"
+                            echo "✅ SERVER ONLINE! WebGoat đã sẵn sàng."
                             isReady = true
                             break
                         }
@@ -124,18 +127,20 @@ pipeline {
                     }
 
                     if (!isReady) {
-                        echo "❌ TIMEOUT! Log 50 dòng cuối:"
+                        echo "❌ TIMEOUT! WebGoat khởi động quá lâu (> 15 phút)."
+                        echo "--- Log 50 dòng cuối để debug ---"
                         sh "tail -n 50 app_webgoat.log || true" 
                         error "WebGoat không phản hồi."
                     }
                     
                     // --- TRAFFIC TEST (IP LAN) ---
+                    // Bước này cực quan trọng để Seeker Agent nhận diện Project
                     echo "--- [Traffic] Bắn request mẫu để Seeker bắt ---"
+                    sleep 10 // Chờ thêm chút cho chắc
                     sh "curl -L -v http://192.168.12.190:${APP_PORT}/WebGoat/login || true"
                 }
             }
         }
-
 	stage('5. Quality Gate') {
             steps {
                 script {
