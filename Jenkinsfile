@@ -140,46 +140,53 @@ pipeline {
             steps {
                 script {
                     echo '--- [Gate] Kiểm tra kết quả Seeker ---'
-                    sleep 30 
+                    // Tăng thời gian chờ lên 45s để Agent kịp đồng bộ dữ liệu sau khi WebGoat khởi động
+                    sleep 45 
                     
                     withCredentials([string(credentialsId: 'seeker-access-token', variable: 'SEEKER_ACCESS_TOKEN')]) {
                         sh '''
-                            # Dùng file tạm để chứa Body phản hồi, tránh lỗi cắt chuỗi
-                            rm -f response_body.json
+                            # Xóa file tạm cũ nếu có
+                            rm -f response_body.json status_code.txt
 
-                            echo ">>> Đang gọi API kiểm tra..."
+                            echo ">>> Đang gọi API kiểm tra trạng thái bảo mật..."
+                            echo ">>> Target: $SEEKER_SERVER_URL/rest/api/latest/projects/$SEEKER_PROJECT_KEY/compliance-status"
                             
-                            # -o response_body.json: Ghi nội dung JSON vào file
-                            # -w "%{http_code}": Chỉ in ra HTTP Code để gán vào biến
-                            HTTP_CODE=$(curl -s -k -o response_body.json -w "%{http_code}" \
+                            # Kỹ thuật tách Status Code và Body ra 2 nơi để tránh lỗi cú pháp shell
+                            curl -s -k -o response_body.json -w "%{http_code}" \
                                 -X GET "$SEEKER_SERVER_URL/rest/api/latest/projects/$SEEKER_PROJECT_KEY/compliance-status" \
                                 -H "Authorization: Bearer $SEEKER_ACCESS_TOKEN" \
-                                -H "Accept: application/json")
+                                -H "Accept: application/json" > status_code.txt
 
-                            # Đọc nội dung file ra biến để in log
+                            # Đọc kết quả vào biến
+                            HTTP_CODE=$(cat status_code.txt)
                             BODY=$(cat response_body.json)
 
                             echo ">>> HTTP Code: $HTTP_CODE"
                             echo ">>> Response Body: $BODY"
 
-                            # So sánh chuỗi trong POSIX sh dùng dấu = (thay vì == của bash)
-                            if [ "$HTTP_CODE" = "404" ]; then
-                                echo "❌ ERROR: Không tìm thấy Project Key ($SEEKER_PROJECT_KEY) trên Server."
-                                echo "--- DEBUG: Danh sách các Project đang có trên Seeker ---"
-                                
-                                # Debug: Liệt kê project để tìm key đúng
-                                curl -s -k -X GET "$SEEKER_SERVER_URL/rest/api/latest/projects" \
-                                    -H "Authorization: Bearer $SEEKER_ACCESS_TOKEN" \
-                                    -H "Accept: application/json"
-                                    
-                                echo "" 
+                            # Xử lý logic
+                            if [ "$HTTP_CODE" = "200" ]; then
+                                echo "✅ THÀNH CÔNG! Đã lấy được trạng thái bảo mật."
+                                # Kiểm tra xem Project có pass hay fail (dựa vào JSON trả về)
+                                if echo "$BODY" | grep -q '"pass":true'; then
+                                    echo "🎉 CLIMBING THE LADDER: Dự án đạt chuẩn bảo mật!"
+                                else
+                                    echo "⚠️ WARNING: Dự án chưa đạt chuẩn hoặc có lỗ hổng (Compliance = false)."
+                                    # Tùy bạn muốn fail build hay không, nếu muốn fail thì bỏ comment dòng dưới:
+                                    # exit 1 
+                                fi
+                            elif [ "$HTTP_CODE" = "404" ]; then
+                                echo "❌ ERROR (404): Server không tìm thấy dữ liệu cho Project Key: $SEEKER_PROJECT_KEY"
+                                echo "   -> Nguyên nhân 1: Agent chưa kết nối thành công (Check log WebGoat)."
+                                echo "   -> Nguyên nhân 2: Chưa có traffic đi qua WebGoat (Check Stage 4)."
                                 exit 1
-                            elif [ "$HTTP_CODE" != "200" ]; then
-                                echo "❌ API Error: $HTTP_CODE"
+                            elif [ "$HTTP_CODE" = "403" ]; then
+                                echo "❌ ERROR (403): Token bị từ chối quyền truy cập!"
+                                echo "   -> Vui lòng kiểm tra lại 'seeker-access-token' trong Jenkins Credentials."
                                 exit 1
                             else
-                                echo "✅ Thành công! Trạng thái bảo mật:"
-                                echo "$BODY"
+                                echo "❌ API Error Unknown: $HTTP_CODE"
+                                exit 1
                             fi
                         '''
                     }
