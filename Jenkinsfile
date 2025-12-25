@@ -43,52 +43,56 @@ pipeline {
                 }
             }
         }
-
-        stage('4. IAST (Synopsys Seeker)') {
+	stage('4. IAST (Synopsys Seeker)') {
             steps {
                 script {
                     echo '--- [Step] Synopsys Seeker IAST Setup for JAVA ---'
-                    // Sử dụng seeker-agent-token như bạn yêu cầu
                     withCredentials([string(credentialsId: 'seeker-agent-token', variable: 'SEEKER_ACCESS_TOKEN')]) {
                         
-                        // 1. Reset thư mục
-                        sh "rm -rf seeker app_iast.log || true"
+                        // 1. Dọn dẹp
+                        sh "rm -rf seeker install_agent.sh app_iast.log || true"
 
-                        // 2. Tải Seeker Agent (JAVA)
-                        // Đã đổi URL từ NODEJS sang JAVA
-                        echo "--- Downloading Seeker Java Agent ---"
-                        sh """
-                            sh -c "\$(curl -k -X GET -fsSL --header 'Accept: application/x-sh' \
-                            'http://192.168.12.190:8082/rest/api/latest/installers/agents/scripts/JAVA?osFamily=LINUX&downloadWith=curl&webServer=ALL&flavor=DEFAULT&agentName=&accessToken=${SEEKER_ACCESS_TOKEN}')"
-                        """
+                        // 2. Tải Seeker Agent (FIXED)
+                        // Dùng nháy đơn (Single Quote) để an toàn bảo mật và tránh lỗi cú pháp
+                        echo "--- Downloading Seeker Java Agent Script ---"
+                        sh '''
+                            curl -k -X GET -fsSL \
+                            "http://192.168.12.190:8082/rest/api/latest/installers/agents/scripts/JAVA?osFamily=LINUX&downloadWith=curl&webServer=DEFAULT&flavor=DEFAULT&accessToken=$SEEKER_ACCESS_TOKEN" \
+                            -o install_agent.sh
+                        '''
 
-                        // 3. Setup Agent File
+                        // 3. Kiểm tra file script tải về có lỗi không (Đôi khi tải về file lỗi HTML)
+                        // Nếu file có chứa chữ "html" hoặc "error" ở dòng đầu thì báo lỗi ngay
+                        def fileType = sh(script: "head -n 1 install_agent.sh", returnStdout: true).trim()
+                        echo "Downloaded file header: ${fileType}"
+
+                        // 4. Chạy script cài đặt
+                        echo "--- Installing Agent ---"
+                        sh "chmod +x install_agent.sh"
+                        sh "./install_agent.sh"
+
+                        // 5. Setup Agent File
                         echo "--- Checking Agent ---"
-                        // Script tải về của Seeker cho Java thường tự tạo thư mục 'seeker' và file 'seeker-agent.jar'
+                        // Sau khi chạy script, nó thường tạo folder 'seeker' chứa 'seeker-agent.jar'
                         if (!fileExists('seeker/seeker-agent.jar')) {
-                             // Fallback: Tìm file jar nếu cấu trúc thư mục khác
-                             sh "find . -name seeker-agent.jar"
-                             error "LỖI: Không tìm thấy file seeker-agent.jar sau khi tải."
+                             // Fallback: Tìm file jar bất kỳ trong folder seeker
+                             sh "find seeker -name '*.jar'"
+                             error "LỖI: Không tìm thấy file seeker-agent.jar. Kiểm tra lại token hoặc URL."
                         }
 
-                        // 4. Cấu hình môi trường Seeker
+                        // 6. Cấu hình môi trường Seeker
                         env.SEEKER_SERVER_URL = "http://192.168.12.190:8082"
-                        // Project Key bạn cung cấp
                         env.SEEKER_PROJECT_KEY = "${SEEKER_PROJECT_KEY}" 
                         
-                        // 5. Chạy WebGoat với IAST Agent
+                        // 7. Chạy WebGoat với IAST Agent
                         echo "--- Starting WebGoat with Java Agent ---"
                         
-                        // Tìm file WebGoat jar vừa build
                         def webgoatJar = sh(script: "ls target/webgoat-*.jar | head -n 1", returnStdout: true).trim()
                         
-                        // Kill process cũ nếu có (dựa vào tên file jar)
                         sh "pkill -f 'webgoat' || true"
                         
-                        // Lệnh chạy quan trọng:
-                        // -javaagent: Đường dẫn tới seeker-agent.jar
-                        // -Dserver.port: Cấu hình port cho WebGoat
-                        // -Dserver.address: Để truy cập được từ bên ngoài container/server
+                        // Chạy Java với Agent
+                        // Lưu ý: -Dseeker.server.url là bắt buộc để agent biết gửi dữ liệu về đâu
                         sh """
                             nohup java -javaagent:${env.WORKSPACE}/seeker/seeker-agent.jar \
                             -Dseeker.server.url=${env.SEEKER_SERVER_URL} \
@@ -98,34 +102,27 @@ pipeline {
                             -jar ${webgoatJar} > app_iast.log 2>&1 &
                         """
                         
-                        // WebGoat khởi động RẤT LÂU (Java Spring Boot), cần đợi ít nhất 60-90s
                         echo "Waiting for WebGoat to start (60s)..."
                         sh "sleep 60" 
 
-                        // 6. Kiểm tra log và kết quả
-                        echo "================ APP LOGS (Last 100 lines) ================"
-                        sh "tail -n 100 app_iast.log"
-                        echo "==========================================================="
+                        // 8. Kiểm tra log
+                        echo "================ APP LOGS (Last 50 lines) ================"
+                        sh "tail -n 50 app_iast.log"
+                        echo "=========================================================="
                         
-                        // Kiểm tra process Java còn sống không
                         def isRunning = sh(script: "pgrep -f 'webgoat' > /dev/null && echo 'YES' || echo 'NO'", returnStdout: true).trim()
 
                         if (isRunning == 'YES') {
-                            echo ">>> SUCCESS: WebGoat is running with Seeker Agent!"
+                            echo ">>> SUCCESS: WebGoat is running!"
                             try {
-                                echo "--- Sending Traffic to trigger IAST ---"
-                                // Gửi request đơn giản để kích hoạt Agent
+                                echo "--- Sending Traffic ---"
                                 sh "curl -v http://localhost:${APP_PORT}/WebGoat/login || true"
-                                
-                                // Nếu bạn có file test script (ví dụ JMeter hoặc Python), chạy ở đây
-                                // sh "python3 trigger_traffic.py"
                             } finally {
-                                echo "--- Cleaning up ---"
-                                sh "sleep 10"
+                                sh "sleep 5"
                                 sh "pkill -f 'webgoat' || true"
                             }
                         } else {
-                            error ">>> App crashed/Stopped. WebGoat không chạy. Kiểm tra log ở trên."
+                            error ">>> App crashed. WebGoat không chạy."
                         }
                     }
                 }
