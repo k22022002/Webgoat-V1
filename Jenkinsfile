@@ -4,8 +4,8 @@ pipeline {
     tools {
         // LƯU Ý: Bạn cần cài đặt tên Tool này trong "Global Tool Configuration" của Jenkins
         // WebGoat bản mới thường yêu cầu JDK 17
-        maven 'Maven' 
-        jdk 'JDK17'   
+        maven 'Maven3.9.11' 
+        jdk 'JDK 17'   
     }
 
     environment {
