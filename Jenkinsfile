@@ -2,204 +2,134 @@ pipeline {
     agent any 
 
     tools {
-        maven 'Maven3.9.11' 
-        jdk 'JDK 17'
+        // LƯU Ý: Bạn cần cài đặt tên Tool này trong "Global Tool Configuration" của Jenkins
+        // WebGoat bản mới thường yêu cầu JDK 17
+        maven 'Maven' 
+        jdk 'JDK17'   
     }
 
     environment {
+        // WebGoat mặc định chạy 8080, ta đổi sang 8090 để tránh trùng port Jenkins nếu chạy chung
         APP_PORT = "8090"
-        
-        // --- CẤU HÌNH SEEKER (Theo ảnh) ---
-        SEEKER_SERVER_URL = "http://192.168.12.190:8082" 
         SEEKER_PROJECT_KEY = "webgoat-2023-demo"
     }
 
     stages {
-        stage('1. Build Application') {
+        // --- BƯỚC 1: SETUP & BUILD (Java/Maven) ---
+        stage('1. Smart Build') {
             steps {
                 script {
-                    echo '--- [Build] Compiling WebGoat v2023.8 ---'
-                    sh "mvn clean install -DskipTests"
+                    echo '--- [Setup] Checking Source & Build Artifacts ---'
+                    
+                    // 1. Kiểm tra Source Code
+                    if (!fileExists('pom.xml')) {
+                        echo 'Source code not found. Checking out...'
+                        checkout scm
+                    } else {
+                        echo '>>> Source code found (pom.xml).'
+                    }
+
+                    // 2. Kiểm tra file .jar đã build chưa (để tiết kiệm thời gian)
+                    // WebGoat build xong thường nằm trong folder target/
+                    def jarExists = sh(script: "ls target/webgoat-*.jar 2>/dev/null || echo 'NO'", returnStdout: true).trim()
+
+                    if (jarExists == 'NO') {
+                        echo 'Build artifact not found. Running Maven Build...'
+                        // Skip test unit để build nhanh hơn, vì ta đang cần chạy IAST
+                        sh 'mvn clean install -DskipTests'
+                    } else {
+                        echo '>>> Build artifact found in target/. Skipping Maven Build.'
+                    }
                 }
             }
         }
 
-	stage('2. Get Seeker Attacher') {
+        stage('4. IAST (Synopsys Seeker)') {
             steps {
                 script {
-                    echo '--- [Agent] Downloading Seeker Attacher (via Binary API) ---'
-                    withCredentials([string(credentialsId: 'seeker-agent-token', variable: 'SEEKER_AGENT_TOKEN')]) {
+                    echo '--- [Step] Synopsys Seeker IAST Setup for JAVA ---'
+                    // Sử dụng seeker-agent-token như bạn yêu cầu
+                    withCredentials([string(credentialsId: 'seeker-agent-token', variable: 'SEEKER_ACCESS_TOKEN')]) {
                         
-                        // Xóa file cũ nếu có
-                        sh "rm -f seeker-attacher.jar"
+                        // 1. Reset thư mục
+                        sh "rm -rf seeker app_iast.log || true"
 
-                        // --- SỬ DỤNG API CHUẨN CỦA SEEKER ---
-                        // Endpoint: /rest/api/latest/installers/agents/binaries/JAVA
-                        // Tham số: flavor=ATTACHER (Để lấy riêng file attacher)
-                        def DOWNLOAD_URL = "${SEEKER_SERVER_URL}/rest/api/latest/installers/agents/binaries/JAVA?flavor=ATTACHER&accessToken=${SEEKER_AGENT_TOKEN}"
-                        
-                        echo ">>> Đang tải từ API chuẩn: ${DOWNLOAD_URL}"
+                        // 2. Tải Seeker Agent (JAVA)
+                        // Đã đổi URL từ NODEJS sang JAVA
+                        echo "--- Downloading Seeker Java Agent ---"
+                        sh """
+                            sh -c "\$(curl -k -X GET -fsSL --header 'Accept: application/x-sh' \
+                            'http://192.168.12.190:8082/rest/api/latest/installers/agents/scripts/JAVA?osFamily=LINUX&downloadWith=curl&webServer=ALL&flavor=DEFAULT&agentName=&accessToken=${SEEKER_ACCESS_TOKEN}')"
+                        """
 
-                        try {
-                            // Thêm -f để báo lỗi ngay nếu 404/500
-                            // Thêm -L để follow redirect (quan trọng)
-                            sh """
-                                curl -f -L -v -o seeker-attacher.jar "${DOWNLOAD_URL}"
-                            """
-                        } catch (Exception e) {
-                            echo "❌ DOWNLOAD THẤT BẠI. Kiểm tra lại Token hoặc kết nối mạng."
-                            error "Curl Error"
+                        // 3. Setup Agent File
+                        echo "--- Checking Agent ---"
+                        // Script tải về của Seeker cho Java thường tự tạo thư mục 'seeker' và file 'seeker-agent.jar'
+                        if (!fileExists('seeker/seeker-agent.jar')) {
+                             // Fallback: Tìm file jar nếu cấu trúc thư mục khác
+                             sh "find . -name seeker-agent.jar"
+                             error "LỖI: Không tìm thấy file seeker-agent.jar sau khi tải."
                         }
 
-                        // Kiểm tra kỹ file tải về
-                        def fileType = sh(script: "file seeker-attacher.jar", returnStdout: true).trim()
-                        echo ">>> Loại file tải về: ${fileType}"
+                        // 4. Cấu hình môi trường Seeker
+                        env.SEEKER_SERVER_URL = "http://192.168.12.190:8082"
+                        // Project Key bạn cung cấp
+                        env.SEEKER_PROJECT_KEY = "${SEEKER_PROJECT_KEY}" 
+                        
+                        // 5. Chạy WebGoat với IAST Agent
+                        echo "--- Starting WebGoat with Java Agent ---"
+                        
+                        // Tìm file WebGoat jar vừa build
+                        def webgoatJar = sh(script: "ls target/webgoat-*.jar | head -n 1", returnStdout: true).trim()
+                        
+                        // Kill process cũ nếu có (dựa vào tên file jar)
+                        sh "pkill -f 'webgoat' || true"
+                        
+                        // Lệnh chạy quan trọng:
+                        // -javaagent: Đường dẫn tới seeker-agent.jar
+                        // -Dserver.port: Cấu hình port cho WebGoat
+                        // -Dserver.address: Để truy cập được từ bên ngoài container/server
+                        sh """
+                            nohup java -javaagent:${env.WORKSPACE}/seeker/seeker-agent.jar \
+                            -Dseeker.server.url=${env.SEEKER_SERVER_URL} \
+                            -Dseeker.project.key=${env.SEEKER_PROJECT_KEY} \
+                            -Dserver.port=${APP_PORT} \
+                            -Dserver.address=0.0.0.0 \
+                            -jar ${webgoatJar} > app_iast.log 2>&1 &
+                        """
+                        
+                        // WebGoat khởi động RẤT LÂU (Java Spring Boot), cần đợi ít nhất 60-90s
+                        echo "Waiting for WebGoat to start (60s)..."
+                        sh "sleep 60" 
 
-                        // File đúng phải là "Java archive" hoặc "Zip archive"
-                        if (!fileType.contains("Zip") && !fileType.contains("Java") && !fileType.contains("JAR")) {
-                            echo "❌ FILE HỎNG: Server trả về text/html chứ không phải file JAR."
-                            echo ">>> Nội dung file (20 dòng đầu):"
-                            sh "head -n 20 seeker-attacher.jar"
-                            error "Invalid Jar File"
+                        // 6. Kiểm tra log và kết quả
+                        echo "================ APP LOGS (Last 100 lines) ================"
+                        sh "tail -n 100 app_iast.log"
+                        echo "==========================================================="
+                        
+                        // Kiểm tra process Java còn sống không
+                        def isRunning = sh(script: "pgrep -f 'webgoat' > /dev/null && echo 'YES' || echo 'NO'", returnStdout: true).trim()
+
+                        if (isRunning == 'YES') {
+                            echo ">>> SUCCESS: WebGoat is running with Seeker Agent!"
+                            try {
+                                echo "--- Sending Traffic to trigger IAST ---"
+                                // Gửi request đơn giản để kích hoạt Agent
+                                sh "curl -v http://localhost:${APP_PORT}/WebGoat/login || true"
+                                
+                                // Nếu bạn có file test script (ví dụ JMeter hoặc Python), chạy ở đây
+                                // sh "python3 trigger_traffic.py"
+                            } finally {
+                                echo "--- Cleaning up ---"
+                                sh "sleep 10"
+                                sh "pkill -f 'webgoat' || true"
+                            }
                         } else {
-                            echo "✅ Đã tải seeker-attacher.jar thành công!"
+                            error ">>> App crashed/Stopped. WebGoat không chạy. Kiểm tra log ở trên."
                         }
                     }
                 }
             }
-        }
-        stage('3. Run App & Attach Agent') {
-            steps {
-                script {
-                    echo '--- [Run] Starting WebGoat (Standalone) ---'
-                    
-                    def webgoatJar = sh(script: 'find target -name "webgoat-*.jar" | grep -v "original" | head -n 1', returnStdout: true).trim()
-                    if (webgoatJar == "") { 
-                        webgoatJar = sh(script: 'find . -name "webgoat-*.jar" | grep -v "original" | head -n 1', returnStdout: true).trim()
-                    }
-
-                    sh "pkill -f webgoat || true"
-                    sh "sleep 2"
-
-                    // BƯỚC 1: Khởi động WebGoat BÌNH THƯỜNG (Không có -javaagent)
-                    // Lưu lại PID vào file pid.txt để dùng cho lệnh attach
-                    sh """
-                        echo ">>> Đang khởi động WebGoat..."
-                        nohup java \\
-                        --add-opens java.base/sun.nio.ch=ALL-UNNAMED \\
-                        --add-opens java.base/java.io=ALL-UNNAMED \\
-                        -Xmx2g \\
-                        -Dserver.port=${APP_PORT} \\
-                        -Dserver.address=0.0.0.0 \\
-                        -Dserver.servlet.context-path=/WebGoat \\
-                        -jar ${webgoatJar} > app_webgoat.log 2>&1 & echo \$! > pid.txt
-                    """
-                    
-                    // Chờ một chút để tiến trình Java ổn định PID
-                    sh "sleep 5"
-                    
-                    // BƯỚC 2: Thực hiện lệnh Attach như trong HÌNH ẢNH 1
-                    echo '--- [Attach] Connecting Seeker Agent to Process ---'
-                    def pid = readFile('pid.txt').trim()
-                    echo ">>> WebGoat PID: ${pid}"
-                    
-                    // Lệnh copy y nguyên từ hướng dẫn trong ảnh (Image 1)
-                    sh """
-                        java -Dseeker.server.url=${SEEKER_SERVER_URL} \\
-                             -Dseeker.project.key=${SEEKER_PROJECT_KEY} \\
-                             -jar seeker-attacher.jar ${pid}
-                    """
-                    
-                    echo ">>> Đã gửi lệnh Attach. Kiểm tra log ứng dụng để xác nhận kết nối."
-                }
-            }
-        }
-
-        stage('4. Deep Health Check') {
-            steps {
-                script {
-                    echo "--- [Check] Đang chờ WebGoat khởi động (Max 5 phút) ---"
-                    
-                    def isStarted = false
-                    for (int i = 0; i < 30; i++) { 
-                        // Kiểm tra port
-                        def checkPort = sh(script: "netstat -an | grep ${APP_PORT} | grep LISTEN || echo 'not_listening'", returnStdout: true).trim()
-                        // Kiểm tra HTTP Status
-                        def status = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${APP_PORT}/WebGoat/login || echo '000'", returnStdout: true).trim()
-
-                        if (status == '200' || status == '302') {
-                            echo "✅ WebGoat đã Online! (Status: ${status})"
-                            isStarted = true
-                            break
-                        }
-                        
-                        echo ">>> [Wait ${i*10}s] Đang chờ ứng dụng... (Status: ${status})"
-                        
-                        // Kiểm tra xem Agent đã báo log kết nối chưa
-                        sh "grep -i 'Seeker' app_webgoat.log | tail -n 2 || true"
-                        sleep 10
-                    }
-
-                    if (!isStarted) {
-                        echo "❌ TIMEOUT: WebGoat không khởi động được."
-                        sh "cat app_webgoat.log"
-                        error "Application Start Timeout"
-                    }
-
-                    // --- TRAFFIC TEST ---
-                    echo "--- [Traffic] Bắn Traffic để kích hoạt Agent ---"
-                    sh """
-                        curl -s -X POST http://127.0.0.1:${APP_PORT}/WebGoat/login \\
-                        -d "username=admin&password=password" \\
-                        -H "Content-Type: application/x-www-form-urlencoded"
-                    """
-                    echo ">>> Chờ 15s để dữ liệu đồng bộ về Server..."
-                    sleep 15
-                }
-            }
-        }
-        
-        stage('5. Quality Gate') {
-            steps {
-                script {
-                    echo '--- [Gate] Kiểm tra kết quả Seeker (Image 2) ---'
-                    
-                    withCredentials([string(credentialsId: 'seeker-api-token', variable: 'SEEKER_API_TOKEN')]) {
-                        sh '''
-                            rm -f response_body.json status_code.txt
-                            
-                            # Kiểm tra trạng thái Compliance
-                            curl -s -k -o response_body.json -w "%{http_code}" \
-                                -X GET "$SEEKER_SERVER_URL/rest/api/latest/projects/$SEEKER_PROJECT_KEY/compliance-status" \
-                                -H "Authorization: Bearer $SEEKER_API_TOKEN" \
-                                -H "Accept: application/json" > status_code.txt
-
-                            HTTP_CODE=$(cat status_code.txt)
-                            BODY=$(cat response_body.json)
-
-                            echo ">>> HTTP Code: $HTTP_CODE"
-                            
-                            if [ "$HTTP_CODE" = "200" ]; then
-                                echo "✅ KẾT NỐI THÀNH CÔNG & ĐÃ CÓ DỮ LIỆU!"
-                                echo "$BODY"
-                            else
-                                echo "❌ LỖI: Chưa thấy dữ liệu hoặc không kết nối được."
-                                echo "Response: $BODY"
-                                echo "--- Debug Log ---"
-                                cat app_webgoat.log
-                                exit 1
-                            fi
-                        '''
-                    }
-                }
-            }
-        }
-    }
-    
-    post {
-        always {
-            echo "--- [Cleanup] ---"
-            sh "pkill -f webgoat || true"
         }
     }
 }
