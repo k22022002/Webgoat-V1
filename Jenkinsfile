@@ -107,50 +107,70 @@ pipeline {
             }
         }
 
+	// =========================================
+        // STAGE 4: HEALTH CHECK & TRAFFIC GENERATION
         // =========================================
-        // STAGE 4: HEALTH CHECK & TRAFFIC
-        // =========================================
-        stage('4. Deep Health Check') {
+        stage('4. Health Check & Traffic') {
             steps {
                 script {
-                    echo "💓 [Check] Waiting for WebGoat..."
+                    echo "💓 [Check] Waiting for WebGoat to be alive..."
+                    // 1. Chờ ứng dụng Start (Health Check cơ bản)
+                    // ---------------------------------------------------------
                     boolean isReady = false
-                    int maxRetries = 90
-
-                    // Loop check status
-                    for (int i = 1; i <= maxRetries; i++) {
+                    for (int i = 1; i <= 30; i++) { // Thử 30 lần, mỗi lần 10s = 5 phút
                         def status = sh(
                             script: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${APP_PORT}/WebGoat/login || echo '000'", 
                             returnStdout: true
                         ).trim()
-
-                        echo ">>> [Wait ${i*10}s] HTTP Status: ${status}"
                         
+                        echo ">>> [Attempt ${i}] Status: ${status}"
                         if (status == '200' || status == '302') {
-                            echo "✅ SERVER ONLINE!"
-                            isReady = true
-                            break
+                            isReady = true; break;
                         }
                         sleep 10
                     }
+                    if (!isReady) error "❌ Timeout: WebGoat không phản hồi."
 
-                    if (!isReady) {
-                        sh "tail -n 50 app_webgoat.log || true"
-                        error "❌ Timeout: WebGoat không phản hồi sau 15 phút."
-                    }
-
-                    // Generate Traffic to activate Seeker
-                    echo "🚦 [Traffic] Sending login request to activate Seeker..."
+                    // 2. Tạo Traffic đa dạng để Seeker phân tích
+                    // ---------------------------------------------------------
+                    echo "🚦 [Traffic] Generating traffic for Seeker..."
+                    
+                    // A. ĐĂNG NHẬP & LƯU COOKIE
+                    // Dùng cờ -c cookies.txt để lưu session ID sau khi login thành công
                     sh """
-                        curl -s -X POST http://127.0.0.1:${APP_PORT}/WebGoat/login \\
-                        -d "username=admin&password=password" \\
-                        -H "Content-Type: application/x-www-form-urlencoded"
+                        rm -f cookies.txt
+                        echo ">>> 1. Login & Save Cookie..."
+                        curl -s -k -c cookies.txt -X POST http://127.0.0.1:${APP_PORT}/WebGoat/login \\
+                             -d "username=admin&password=password" \\
+                             -H "Content-Type: application/x-www-form-urlencoded"
                     """
-                    sleep 15 // Chờ Agent đồng bộ dữ liệu lên Server
+
+                    // B. GỌI CÁC API KHÁC (Dùng cookie đã lưu)
+                    // Dùng cờ -b cookies.txt để gửi kèm session ID
+                    sh """
+                        echo ">>> 2. Accessing Welcome Page..."
+                        curl -s -k -b cookies.txt -o /dev/null http://127.0.0.1:${APP_PORT}/WebGoat/welcome.mvc
+                        
+                        echo ">>> 3. Listing Lessons (API)..."
+                        curl -s -k -b cookies.txt -o /dev/null http://127.0.0.1:${APP_PORT}/WebGoat/service/lessoninfo.mvc
+                        
+                        echo ">>> 4. Simulating SQL Injection Traffic..."
+                        # Đây là endpoint bài học SQL Injection. 
+                        # Việc gọi nó giúp Seeker nhận diện Controller xử lý SQL.
+                        curl -s -k -b cookies.txt -o /dev/null http://127.0.0.1:${APP_PORT}/WebGoat/SqlInjection/attack5a
+                        
+                        echo ">>> 5. Simulating User Profile Search (Data Flow)..."
+                        # Giả lập search user (API thường thấy trong WebGoat)
+                        curl -s -k -b cookies.txt -o /dev/null -X POST http://127.0.0.1:${APP_PORT}/WebGoat/SqlInjection/servers \\
+                             -H "Content-Type: application/x-www-form-urlencoded" \\
+                             -d "column=hostname"
+                    """
+                    
+                    echo "✅ Traffic generation completed!"
+                    sleep 15 // Chờ một chút để Agent đẩy dữ liệu cuối cùng lên Server
                 }
             }
         }
-
         // =========================================
         // STAGE 5: QUALITY GATE
         // =========================================
