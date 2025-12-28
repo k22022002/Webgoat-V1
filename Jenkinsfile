@@ -342,7 +342,7 @@ pipeline {
                             break
                         }
                         echo "Waiting... (Goat: ${gStatus}, Wolf: ${wStatus}) [${i}/60]"
-                        sleep 5
+                        sleep 15
                     }
                     
                     if (!prodReady) {
