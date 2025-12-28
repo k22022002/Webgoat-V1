@@ -92,7 +92,7 @@ pipeline {
                     echo "[Check] Waiting for Services (Custom Loop)..."
                     boolean isReady = false
                     
-                    // 1. Health Check Loop (Giữ nguyên theo code bạn gửi)
+                    // 1. Health Check Loop (Giữ nguyên theo yêu cầu của bạn)
                     for (int i = 1; i <= 60; i++) { 
                         def statusGoat = sh(script: "curl -s -L -o /dev/null -w '%{http_code}' http://127.0.0.1:${TEST_PORT}/WebGoat/login || echo '000'", returnStdout: true).trim()
                         def statusWolf = sh(script: "curl -s -L -o /dev/null -w '%{http_code}' http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/login || echo '000'", returnStdout: true).trim()
@@ -108,9 +108,9 @@ pipeline {
 
                     if (!isReady) error "Timeout: Services did not start."
 
-                    echo "[Traffic] Executing Targeted Traffic Script..."
+                    echo "[Traffic] Executing NEW Targeted Traffic Script..."
 
-                    // 2. Traffic Generation (Kịch bản đầy đủ endpoint + CSRF + File Upload)
+                    // 2. Traffic Generation (Cập nhật endpoint mới từ hình ảnh)
                     sh """
                         # Dọn dẹp file tạm
                         rm -f cookies.txt cookies_wolf.txt goat_login.html wolf_login.html payload.txt
@@ -123,34 +123,68 @@ pipeline {
                         curl -s -c cookies.txt http://127.0.0.1:${TEST_PORT}/WebGoat/login > goat_login.html
                         GOAT_CSRF=\$(grep -oP 'name="_csrf" value="\\K[^"]+' goat_login.html || echo "none")
 
+                        # Login
                         curl -s -c cookies.txt -X POST http://127.0.0.1:${TEST_PORT}/WebGoat/login \\
                              -d "username=webgoatadmin&password=password&_csrf=\$GOAT_CSRF" \\
                              -H "Content-Type: application/x-www-form-urlencoded" > /dev/null
 
-                        echo ">>> [WebGoat] Hitting Specific Endpoints..."
-                        
-                        # Labels MVC (PUT, POST)
-                        curl -s -b cookies.txt -X POST -H "X-CSRF-TOKEN: \$GOAT_CSRF" -H "Content-Type: application/json" -d '{}' http://127.0.0.1:${TEST_PORT}/WebGoat/service/debug/labels.mvc || true
-                        curl -s -b cookies.txt -X PUT  -H "X-CSRF-TOKEN: \$GOAT_CSRF" -H "Content-Type: application/json" -d '{}' http://127.0.0.1:${TEST_PORT}/WebGoat/service/debug/labels.mvc || true
+                        echo ">>> [WebGoat] Hitting NEW Endpoints..."
 
-                        # JWT Secret (CONNECT)
+                        # --- JWT Lesson Endpoints ---
+                        # /JWT/secret/gettoken (CONNECT, PATCH, DELETE, PUT)
                         curl -s -b cookies.txt -X CONNECT http://127.0.0.1:${TEST_PORT}/WebGoat/JWT/secret/gettoken || true
+                        curl -s -b cookies.txt -X PATCH   -H "X-CSRF-TOKEN: \$GOAT_CSRF" http://127.0.0.1:${TEST_PORT}/WebGoat/JWT/secret/gettoken || true
+                        curl -s -b cookies.txt -X DELETE  -H "X-CSRF-TOKEN: \$GOAT_CSRF" http://127.0.0.1:${TEST_PORT}/WebGoat/JWT/secret/gettoken || true
+                        curl -s -b cookies.txt -X PUT     -H "X-CSRF-TOKEN: \$GOAT_CSRF" http://127.0.0.1:${TEST_PORT}/WebGoat/JWT/secret/gettoken || true
+                        
+                        # Other JWT
+                        curl -s -b cookies.txt -X POST -H "X-CSRF-TOKEN: \$GOAT_CSRF" http://127.0.0.1:${TEST_PORT}/WebGoat/JWT/refresh/newToken || true
+                        curl -s -b cookies.txt -X POST -H "X-CSRF-TOKEN: \$GOAT_CSRF" http://127.0.0.1:${TEST_PORT}/WebGoat/JWT/jku/follow/testuser || true
 
-                        # Config & Coupons (GET)
-                        curl -s -b cookies.txt -X GET http://127.0.0.1:${TEST_PORT}/WebGoat/SecurityMisconfiguration/task2/config || true
-                        curl -s -b cookies.txt -X GET http://127.0.0.1:${TEST_PORT}/WebGoat/clientSideFiltering/challenge-store/coupons || true
+                        # --- Crypto Lesson Endpoints ---
+                        # Hashing (HEAD, PATCH, PUT)
+                        curl -s -b cookies.txt -I http://127.0.0.1:${TEST_PORT}/WebGoat/crypto/hashing/sha256 || true
+                        curl -s -b cookies.txt -X PATCH -H "X-CSRF-TOKEN: \$GOAT_CSRF" http://127.0.0.1:${TEST_PORT}/WebGoat/crypto/hashing/sha256 || true
+                        curl -s -b cookies.txt -X PUT   -H "X-CSRF-TOKEN: \$GOAT_CSRF" http://127.0.0.1:${TEST_PORT}/WebGoat/crypto/hashing/md5 || true
+                        
+                        # Signing (HEAD, POST)
+                        curl -s -b cookies.txt -I http://127.0.0.1:${TEST_PORT}/WebGoat/crypto/signing/getprivate || true
+                        curl -s -b cookies.txt -X POST -H "X-CSRF-TOKEN: \$GOAT_CSRF" http://127.0.0.1:${TEST_PORT}/WebGoat/crypto/signing/getprivate || true
 
-                        # XXE (PUT, GET)
+                        # --- Service & Menu Endpoints ---
+                        # lessonmenu.mvc (TRACE, DELETE, PATCH, POST)
+                        curl -s -b cookies.txt -X TRACE  http://127.0.0.1:${TEST_PORT}/WebGoat/service/lessonmenu.mvc || true
+                        curl -s -b cookies.txt -X DELETE -H "X-CSRF-TOKEN: \$GOAT_CSRF" http://127.0.0.1:${TEST_PORT}/WebGoat/service/lessonmenu.mvc || true
+                        curl -s -b cookies.txt -X PATCH  -H "X-CSRF-TOKEN: \$GOAT_CSRF" http://127.0.0.1:${TEST_PORT}/WebGoat/service/lessonmenu.mvc || true
+                        curl -s -b cookies.txt -X POST   -H "X-CSRF-TOKEN: \$GOAT_CSRF" http://127.0.0.1:${TEST_PORT}/WebGoat/service/lessonmenu.mvc || true
+                        
+                        # enable-security.mvc (DELETE, OPTIONS, TRACE)
+                        curl -s -b cookies.txt -X DELETE  -H "X-CSRF-TOKEN: \$GOAT_CSRF" http://127.0.0.1:${TEST_PORT}/WebGoat/service/enable-security.mvc || true
+                        curl -s -b cookies.txt -X OPTIONS http://127.0.0.1:${TEST_PORT}/WebGoat/service/enable-security.mvc || true
+                        curl -s -b cookies.txt -X TRACE   http://127.0.0.1:${TEST_PORT}/WebGoat/service/enable-security.mvc || true
+
+                        # reportcard.mvc (GET)
+                        curl -s -b cookies.txt -X GET http://127.0.0.1:${TEST_PORT}/WebGoat/service/reportcard.mvc || true
+
+                        # --- XXE Endpoints ---
+                        # simpledtd (PUT, GET) & sampledtd (POST)
                         curl -s -b cookies.txt -X PUT -H "X-CSRF-TOKEN: \$GOAT_CSRF" -H "Content-Type: application/xml" -d '<root>test</root>' http://127.0.0.1:${TEST_PORT}/WebGoat/xxe/simpledtd || true
                         curl -s -b cookies.txt -X GET http://127.0.0.1:${TEST_PORT}/WebGoat/xxe/simpledtd || true
+                        curl -s -b cookies.txt -X POST -H "X-CSRF-TOKEN: \$GOAT_CSRF" -H "Content-Type: application/xml" -d '<root>test</root>' http://127.0.0.1:${TEST_PORT}/WebGoat/xxe/sampledtd || true
 
-                        # Crypto Hashing (HEAD)
-                        curl -s -b cookies.txt -I http://127.0.0.1:${TEST_PORT}/WebGoat/crypto/hashing/sha256 || true
-                        curl -s -b cookies.txt -I http://127.0.0.1:${TEST_PORT}/WebGoat/crypto/hashing/md5 || true
-
-                        # Service Security (DELETE)
-                        curl -s -b cookies.txt -X DELETE -H "X-CSRF-TOKEN: \$GOAT_CSRF" http://127.0.0.1:${TEST_PORT}/WebGoat/service/enable-security.mvc || true
-
+                        # --- Path Traversal Endpoints ---
+                        curl -s -b cookies.txt -X GET http://127.0.0.1:${TEST_PORT}/WebGoat/PathTraversal/zip-slip || true
+                        curl -s -b cookies.txt -X GET http://127.0.0.1:${TEST_PORT}/WebGoat/PathTraversal/zip-slip/profile-image/testuser || true
+                        
+                        # --- Misc Endpoints ---
+                        curl -s -b cookies.txt -X GET http://127.0.0.1:${TEST_PORT}/WebGoat/SecurityMisconfiguration/task2/config || true
+                        curl -s -b cookies.txt -X GET http://127.0.0.1:${TEST_PORT}/WebGoat/clientSideFiltering/challenge-store/coupons || true
+                        curl -s -b cookies.txt -X GET http://127.0.0.1:${TEST_PORT}/WebGoat/lesson-template/shop/testuser || true
+                        curl -s -b cookies.txt -X GET http://127.0.0.1:${TEST_PORT}/WebGoat/SpoofCookie/cleanup || true
+                        
+                        # InsecureLogin & PasswordReset
+                        curl -s -b cookies.txt -X POST -H "X-CSRF-TOKEN: \$GOAT_CSRF" -d "username=test&password=test" http://127.0.0.1:${TEST_PORT}/WebGoat/InsecureLogin/login || true
+                        curl -s -b cookies.txt -X POST -H "X-CSRF-TOKEN: \$GOAT_CSRF" -d "password=newpass" http://127.0.0.1:${TEST_PORT}/WebGoat/PasswordReset/reset/change-password || true
 
                         # ====================================================
                         # B. WEBWOLF TARGETING (Port ${WOLF_TEST_PORT})
@@ -163,34 +197,41 @@ pipeline {
                              -d "username=webgoatadmin&password=password&_csrf=\$WOLF_CSRF" \\
                              -H "Content-Type: application/x-www-form-urlencoded" > /dev/null
 
-                        echo ">>> [WebWolf] Fuzzing /file-server-location & /landing..."
+                        echo ">>> [WebWolf] Fuzzing /file-server-location & /landing & Error Paths..."
                         
-                        # Loop all methods
+                        # Xóa endpoint mail (DELETE)
+                        curl -s -b cookies_wolf.txt -X DELETE -H "X-CSRF-TOKEN: \$WOLF_CSRF" http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/mail || true
+
+                        # Loop ALL methods for generic endpoints
                         for method in GET POST PUT DELETE PATCH TRACE OPTIONS HEAD CONNECT; do
-                            # Target /landing
+                            # 1. Landing Page
                             curl -s -b cookies_wolf.txt -X \$method \\
                                  -H "X-CSRF-TOKEN: \$WOLF_CSRF" \\
                                  -o /dev/null http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/landing || true
 
-                            # Target /file-server-location (Simulate File Upload)
+                            # 2. File Server (Upload simulation)
                             curl -s -b cookies_wolf.txt -X \$method \\
                                  -H "X-CSRF-TOKEN: \$WOLF_CSRF" \\
                                  -F "file=@payload.txt" \\
                                  -o /dev/null http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/file-server-location || true
+                            
+                            # 3. Trigger Error Paths (\${server.error.path})
+                            # Seeker phát hiện ra các đường dẫn lỗi khi ta request vào URL không tồn tại
+                            # hoặc URL gây lỗi. Ta dùng loop method vào URL lỗi để cover hết các trường hợp.
+                            curl -s -b cookies_wolf.txt -X \$method \\
+                                 -H "X-CSRF-TOKEN: \$WOLF_CSRF" \\
+                                 -o /dev/null http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/force-error-page || true
                         done
-
-                        echo ">>> [Errors] Triggering Error Pages..."
-                        curl -s -b cookies_wolf.txt http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/force-404-error || true
-                        curl -s -b cookies.txt http://127.0.0.1:${TEST_PORT}/WebGoat/force-404-error || true
+                        
+                        # Trigger error trên WebGoat nữa
+                         curl -s -b cookies.txt -X DELETE http://127.0.0.1:${TEST_PORT}/WebGoat/force-error-page || true
+                         curl -s -b cookies.txt -X GET http://127.0.0.1:${TEST_PORT}/WebGoat/force-error-page || true
                     """
 
-                    // 3. Cleanup (Đã thêm lại phần Kill Process)
+                    // 3. Cleanup (Giữ nguyên lệnh kill process)
                     echo "[Cleanup] Stopping Test Instances..."
                     sh """
-                        # Kill WebGoat (9595)
                         lsof -t -i:${TEST_PORT} | xargs -r kill -9 || true
-                        
-                        # Kill WebWolf (9096)
                         lsof -t -i:${WOLF_TEST_PORT} | xargs -r kill -9 || true
                     """
                 }
