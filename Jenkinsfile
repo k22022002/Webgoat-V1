@@ -107,75 +107,40 @@ pipeline {
 
                     echo "[Traffic] Executing Targeted Traffic Script..."
                     
-                    sh """
-			# ====================================================
-# A. WEBGOAT TARGETING (Port ${TEST_PORT})
-# ====================================================
-echo ">>> [WebGoat] Login & CSRF Extraction..."
-curl -s -k -c cookies.txt http://127.0.0.1:${TEST_PORT}/WebGoat/login > goat_login.html
-GOAT_CSRF=$(cat goat_login.html | grep -oP 'name="_csrf" value="\K[^"]+' || echo "none")
+		    sh """
+                # 1. Định nghĩa danh sách các Endpoint từ ảnh để quét
+                # Lưu ý: Sử dụng \\\$ để Groovy không hiểu lầm là biến của nó
+                
+                echo ">>> [WebGoat] Login & CSRF Extraction..."
+                curl -s -k -c cookies.txt http://127.0.0.1:${TEST_PORT}/WebGoat/login > goat_login.html
+                # Escape dấu $ ở lệnh shell: \\\$
+                GOAT_CSRF=\\\$(cat goat_login.html | grep -oP 'name="_csrf" value="\\K[^"]+' || echo "none")
 
-# Login
-curl -s -k -c cookies.txt -X POST http://127.0.0.1:${TEST_PORT}/WebGoat/login \
-     -d "username=webgoatadmin&password=password&_csrf=$GOAT_CSRF" \
-     -H "Content-Type: application/x-www-form-urlencoded" > /dev/null
+                # Login WebGoat
+                curl -s -k -c cookies.txt -X POST http://127.0.0.1:${TEST_PORT}/WebGoat/login \\
+                     -d "username=webgoatadmin&password=password&_csrf=\\\$GOAT_CSRF" \\
+                     -H "Content-Type: application/x-www-form-urlencoded" > /dev/null
 
-echo ">>> [WebGoat] Hitting Specific Endpoints from Image..."
+                echo ">>> [WebGoat] Hitting Specific Endpoints..."
+                # Các endpoint đặc thù từ ảnh
+                curl -s -k -b cookies.txt -X GET "http://127.0.0.1:${TEST_PORT}/WebGoat/clientSideFiltering/challenge-store/coupons" || true
+                curl -s -k -b cookies.txt -X POST -H "X-CSRF-TOKEN: \\\$GOAT_CSRF" "http://127.0.0.1:${TEST_PORT}/WebGoat/InsecureLogin/login" || true
+                curl -s -k -b cookies.txt -X PUT "http://127.0.0.1:${TEST_PORT}/WebGoat/xxe/sampledtd" || true
+                curl -s -k -b cookies.txt -I "http://127.0.0.1:${TEST_PORT}/WebGoat/crypto/hashing/sha256" || true
 
-# Danh sách endpoint đặc thù từ ảnh WebGoat
-declare -a goat_endpoints=(
-    "/WebGoat/SecurityMisconfiguration/task2/config"
-    "/WebGoat/clientSideFiltering/challenge-store/coupons"
-    "/WebGoat/InsecureLogin/login"
-    "/WebGoat/xxe/sampledtd"
-    "/WebGoat/crypto/hashing/sha256"
-    "/WebGoat/service/enable-security.mvc"
-)
+                echo ">>> [WebWolf] Fuzzing Error Paths & File Server..."
+                # Để hit được endpoint \${server.error.path}, ta gửi request sai phương thức
+                # Sử dụng \\\$ cho tên biến trong Shell
+                for method in CONNECT TRACE PATCH OPTIONS DELETE; do
+                    curl -s -k -b cookies.txt -X \\\$method "http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/file-server-location" || true
+                    # Ép lỗi 404/500 để trigger các path xử lý lỗi mặc định
+                    curl -s -k -b cookies.txt -X \\\$method "http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/non-existent-page" || true
+                done
 
-for ep in "${goat_endpoints[@]}"; do
-    # Thử nghiệm với nhiều method khác nhau cho mỗi endpoint
-    for method in GET POST PUT DELETE HEAD OPTIONS; do
-        curl -s -k -b cookies.txt -X $method -H "X-CSRF-TOKEN: $GOAT_CSRF" "http://127.0.0.1:${TEST_PORT}$ep" || true
-    done
-done
-
-# ====================================================
-# B. WEBWOLF TARGETING (Port ${WOLF_TEST_PORT})
-# ====================================================
-echo ">>> [WebWolf] Login & CSRF Extraction..."
-curl -s -k -c cookies_wolf.txt http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/login > wolf_login.html
-WOLF_CSRF=$(cat wolf_login.html | grep -oP 'name="_csrf" value="\K[^"]+' || echo "none")
-
-curl -s -k -c cookies_wolf.txt -X POST http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/login \
-     -d "username=webgoatadmin&password=password&_csrf=$WOLF_CSRF" \
-     -H "Content-Type: application/x-www-form-urlencoded" > /dev/null
-
-echo ">>> [WebWolf] Fuzzing and Error Path Triggering..."
-
-# 1. Target file-server-location với đầy đủ các method trong ảnh
-for method in GET POST PUT DELETE OPTIONS HEAD TRACE CONNECT PATCH; do
-    curl -s -k -b cookies_wolf.txt -X $method -H "X-CSRF-TOKEN: $WOLF_CSRF" \
-         "http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/file-server-location" || true
-done
-
-# 2. Ép lỗi để kích hoạt các endpoint ${server.error.path}
-# Gửi request sai format, sai method đến các path nhạy cảm
-declare -a wolf_paths=("/WebWolf/landing" "/WebWolf/mail" "/WebWolf/JWT/secret/gettoken")
-
-for path in "${wolf_paths[@]}"; do
-    for method in DELETE TRACE CONNECT PATCH PUT; do
-        # Gửi dữ liệu rác để ép ra lỗi 400/405/500
-        curl -s -k -b cookies_wolf.txt -X $method \
-             -H "X-CSRF-TOKEN: invalid_token" \
-             -H "Content-Type: application/xml" \
-             -d "<bad>data</bad>" \
-             "http://127.0.0.1:${WOLF_TEST_PORT}$path" || true
-    done
-done
-
-# 3. Truy cập trực tiếp vào path lỗi (nếu được phép)
-curl -s -k -b cookies_wolf.txt -X GET "http://127.0.0.1:${WOLF_TEST_PORT}/error" || true
-                    """
+                # Hit trực tiếp vào path chứa ký tự đặc biệt như trong ảnh (nếu cần giả lập log)
+                # Ta phải escape cực kỳ cẩn thận đoạn này:
+                curl -s -k -X GET "http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/\\\${server.error.path:\\\${error.path:/error}}" || true
+            """		    
                     
                     echo "[Traffic] Done. Cleaning up..."
                     sh """
