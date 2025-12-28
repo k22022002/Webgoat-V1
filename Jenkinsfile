@@ -87,110 +87,66 @@ pipeline {
             }
         }
 	stage('4. Health Check & Traffic') {
-    steps {
-        script {
-            echo "[Check] Waiting for WebGoat (Test Instance)..."
-            boolean isReady = false
-            
-            // 1. Health Check (Chỉ cần check WebGoat, nếu nó lên thì thường WebWolf cũng lên)
-            for (int i = 1; i <= 60; i++) { 
-                def status = sh(
-                    script: "curl -s -L -o /dev/null -w '%{http_code}' http://127.0.0.1:${TEST_PORT}/WebGoat/login || echo '000'", 
-                    returnStdout: true
-                ).trim()
+            steps {
+                script {
+                    echo "[Check] Waiting for WebGoat (Test Instance)..."
+                    boolean isReady = false
                 
-                if (status == '200' || status == '401') {
-                    isReady = true;
-                    echo "WebGoat is UP on port ${TEST_PORT}!"
-                    break;
+                    // Check health loop
+                    for (int i = 1; i <= 60; i++) { 
+                        def status = sh(
+                            script: "curl -s -L -o /dev/null -w '%{http_code}' http://127.0.0.1:${TEST_PORT}/WebGoat/login || echo '000'", 
+                            returnStdout: true
+                        ).trim()
+                    
+                        // Chấp nhận 200 hoặc 401 (App đã lên)
+                        if (status == '200' || status == '401') {
+                            isReady = true;
+                            echo "WebGoat is UP!"
+                            break;
+                        }
+                        sleep 5
+                    }
+
+                    if (!isReady) {
+                        sh "cat app_webgoat_test.log"
+                        error "Timeout: WebGoat Test Instance did not start on port ${TEST_PORT}."
+                    }
+
+                    echo "[Traffic] Generating traffic for Seeker..."
+                    
+                    sh """
+                        rm -f cookies.txt
+                        
+                        
+                        # 1. ĐĂNG KÝ
+                        echo "--- Registering Account ---"
+                        curl -s -k -X POST http://127.0.0.1:${TEST_PORT}/WebGoat/register.mvc \\
+                             -d "username=webgoatadmin&password=password&matchingPassword=password&agree=agree" \\
+                             -H "Content-Type: application/x-www-form-urlencoded"
+
+                        # 2. LOGIN
+                        echo "--- Logging in ---"
+                        curl -s -k -c cookies.txt  -X POST http://127.0.0.1:${TEST_PORT}/WebGoat/login \\
+                             -d "username=webgoatadmin&password=password" \\
+                             -H "Content-Type: application/x-www-form-urlencoded"
+
+                        # 3. TẠO TRAFFIC
+                        echo "--- Accessing Welcome Page ---"
+                        curl -s -k -b cookies.txt -o /dev/null http://127.0.0.1:${TEST_PORT}/WebGoat/welcome.mvc
+                        
+                        echo "--- Triggering SQL Injection Lesson ---"
+                        curl -s -k -b cookies.txt -o /dev/null http://127.0.0.1:${TEST_PORT}/WebGoat/SqlInjection/attack5a
+                    """
+                    
+                    echo "Traffic generation completed!"
+                    sleep 10 
+                    
+                    echo "[Cleanup] Stopping Test Instance..."
+                    sh "lsof -t -i:${TEST_PORT} | xargs -r kill -9 || true"
                 }
-                sleep 5
             }
-
-            if (!isReady) {
-                sh "cat app_webgoat_test.log"
-                error "Timeout: WebGoat Test Instance did not start on port ${TEST_PORT}."
-            }
-
-            echo "[Traffic] Generating traffic for Seeker..."
-            
-            // 2. Danh sách Endpoint từ Seeker
-            def seekerEndpoints = [
-                // --- Nhóm WebWolf (Sẽ chạy port 9096) ---
-                [method: 'GET',     path: '/WebWolf/file-server-location'],
-                [method: 'OPTIONS', path: '/WebWolf/file-server-location'],
-                [method: 'POST',    path: '/WebWolf/file-server-location'],
-                [method: 'PUT',     path: '/WebWolf/file-server-location'],
-                [method: 'HEAD',    path: '/WebWolf/file-server-location'],
-                [method: 'DELETE',  path: '/WebWolf/file-server-location'],
-                [method: 'PATCH',   path: '/WebWolf/file-server-location'],
-                [method: 'CONNECT', path: '/WebWolf/file-server-location'],
-                [method: 'TRACE',   path: '/WebWolf/file-server-location'],
-
-                [method: 'DELETE',  path: '/WebWolf/landing'],
-                [method: 'PATCH',   path: '/WebWolf/landing'],
-                [method: 'PUT',     path: '/WebWolf/landing'],
-                [method: 'POST',    path: '/WebWolf/landing'],
-                [method: 'DELETE',  path: '/WebWolf/mail'],
-
-                // Các path lỗi chứa ký tự đặc biệt
-                [method: 'DELETE',  path: '/WebWolf/${server.error.path:${error.path:/error}}'],
-                [method: 'GET',     path: '/WebWolf/${server.error.path:${error.path:/error}}'],
-                [method: 'HEAD',    path: '/WebWolf/${server.error.path:${error.path:/error}}'],
-                [method: 'PUT',     path: '/WebWolf/${server.error.path:${error.path:/error}}'],
-                [method: 'TRACE',   path: '/WebWolf/${server.error.path:${error.path:/error}}'],
-                [method: 'POST',    path: '/WebWolf/${server.error.path:${error.path:/error}}'],
-                [method: 'OPTIONS', path: '/WebWolf/${server.error.path:${error.path:/error}}'],
-                [method: 'CONNECT', path: '/WebWolf/${server.error.path:${error.path:/error}}'],
-                [method: 'PATCH',   path: '/WebWolf/${server.error.path:${error.path:/error}}']
-            ]
-
-            // 3. Login WebGoat để lấy Session (Port 9595)
-            sh """
-                rm -f cookies.txt
-                echo "--- Registering & Login (WebGoat) ---"
-                curl -s -k -X POST http://127.0.0.1:${TEST_PORT}/WebGoat/register.mvc \\
-                     -d "username=webgoatadmin&password=password&matchingPassword=password&agree=agree" \\
-                     -H "Content-Type: application/x-www-form-urlencoded"
-
-                curl -s -k -c cookies.txt -X POST http://127.0.0.1:${TEST_PORT}/WebGoat/login \\
-                     -d "username=webgoatadmin&password=password" \\
-                     -H "Content-Type: application/x-www-form-urlencoded"
-            """
-
-            // 4. Vòng lặp bắn Traffic (Tự động chọn Port)
-            echo "--- Triggering Seeker Identified Endpoints ---"
-            
-            seekerEndpoints.each { ep ->
-                // Logic chọn port: Nếu path chứa '/WebWolf' thì dùng WOLF_TEST_PORT, còn lại dùng TEST_PORT
-                def targetPort = ep.path.contains("/WebWolf") ? WOLF_TEST_PORT : TEST_PORT
-                
-                sh """
-                    echo "Testing [${ep.method}] on Port ${targetPort}: ${ep.path}"
-                    # Sử dụng nháy đơn '...' bao quanh URL để shell không parse ký tự $
-                    curl -s -k -b cookies.txt -o /dev/null -X ${ep.method} 'http://127.0.0.1:${targetPort}${ep.path}' || true
-                """
-            }
-            
-            // 5. Traffic bổ sung (Legacy)
-            sh """
-                echo "--- Accessing Welcome Page ---"
-                curl -s -k -b cookies.txt -o /dev/null http://127.0.0.1:${TEST_PORT}/WebGoat/welcome.mvc
-                
-                echo "--- Triggering SQL Injection Lesson ---"
-                curl -s -k -b cookies.txt -o /dev/null http://127.0.0.1:${TEST_PORT}/WebGoat/SqlInjection/attack5a
-            """
-            
-            echo "Traffic generation completed!"
-            sleep 10 
-            
-            // 6. Cleanup (Kill cả 2 port để đảm bảo sạch sẽ)
-            echo "[Cleanup] Stopping Test Instances..."
-            sh "lsof -t -i:${TEST_PORT} | xargs -r kill -9 || true"
-            sh "lsof -t -i:${WOLF_TEST_PORT} | xargs -r kill -9 || true"
         }
-    }
-}
 	stage('5. Quality Gate') {
             steps {
                 script {
