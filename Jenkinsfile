@@ -42,17 +42,15 @@ pipeline {
                     withCredentials([string(credentialsId: 'seeker-agent-token', variable: 'SEEKER_AGENT_TOKEN')]) {
                         if (!fileExists('seeker/seeker-agent.jar')) {
                             echo ">>> Downloading Seeker Agent..."
-                            // Xóa sạch thư mục cũ để tránh lỗi conflict
                             sh "rm -rf seeker installer.sh || true"
                             
-                            // Tải và cài đặt Agent
                             sh """
                                 curl -k -SL -o installer.sh "${SEEKER_SERVER_URL}/rest/api/latest/installers/agents/scripts/JAVA?osFamily=LINUX&downloadWith=curl&webServer=ALL&flavor=DEFAULT&accessToken=${SEEKER_AGENT_TOKEN}&projectKey=${SEEKER_PROJECT_KEY}"
                                 chmod +x installer.sh
                                 sh installer.sh
                             """
                         } else {
-                            echo "✅ Agent đã tồn tại. Sẽ sử dụng cấu hình Dynamic trong lệnh Java."
+                            echo "✅ Agent đã tồn tại."
                         }
                     }
                 }
@@ -60,16 +58,23 @@ pipeline {
         }
 
         // =========================================
-        // STAGE 3: RUN APPLICATION
+        // STAGE 3: RUN APPLICATION (TEST MODE)
         // =========================================
         stage('3. Run App with Seeker') {
             steps {
                 script {
-                    echo "🚀 [Run] Starting WebGoat + Seeker..."
+                    echo "🚀 [Run] Starting WebGoat + Seeker (Test Mode)..."
 
-                    // 1. Tìm file JAR
-		    def webgoatJar = sh(script: 'find . -name "webgoat-*.jar" | grep -v "original" | grep -v "webwolf" | head -n 1', returnStdout: true).trim()
-                    if (!webgoatJar) error "❌ ERROR: Không tìm thấy file .jar!"
+                    // 1. TÌM FILE JAR CHÍNH XÁC (FIX QUAN TRỌNG)
+                    // Chỉ tìm trong webgoat-server/target để lấy đúng file Server thực thi
+                    def webgoatJar = sh(script: 'find webgoat-server/target -name "webgoat-server*.jar" | grep -v "original" | head -n 1', returnStdout: true).trim()
+                    
+                    // Fallback: Nếu không thấy, tìm file nặng > 50MB
+                    if (!webgoatJar) {
+                         webgoatJar = sh(script: 'find . -name "*.jar" -size +50M | grep -v "original" | head -n 1', returnStdout: true).trim()
+                    }
+
+                    if (!webgoatJar) error "❌ ERROR: Không tìm thấy file JAR thực thi (Fat JAR)!"
                     echo ">>> Found JAR: ${webgoatJar}"
 
                     // 2. Cleanup Port cũ
@@ -80,10 +85,7 @@ pipeline {
                     """
 
                     // 3. Khởi động với Seeker Agent
-                    // NOTE: Truyền trực tiếp config vào lệnh Java (-D) thay vì sửa file properties
                     withCredentials([string(credentialsId: 'seeker-agent-token', variable: 'SEEKER_ACCESS_TOKEN')]) {
-                        // Export Token vào Env cho process Java
-                        // Start lệnh chạy background
                         sh """
                             export SEEKER_ACCESS_TOKEN=${SEEKER_ACCESS_TOKEN}
                             
@@ -95,10 +97,10 @@ pipeline {
                                 -Dseeker.server.url=${SEEKER_SERVER_URL} \\
                                 -Dseeker.project.key=${SEEKER_PROJECT_KEY} \\
                                 -Dseeker.agent.auto.update=false \\
-                                -Dserver.port=${APP_PORT} \\
-                                -Dserver.address=0.0.0.0 \\
-                                -Dserver.servlet.context-path=/WebGoat \\
                                 -jar ${webgoatJar} \\
+                                --server.port=${APP_PORT} \\
+                                --server.address=0.0.0.0 \\
+                                --server.servlet.context-path=/WebGoat \\
                                 > app_webgoat.log 2>&1 &
                         """
                     }
@@ -107,23 +109,22 @@ pipeline {
             }
         }
 
-	// =========================================
+        // =========================================
         // STAGE 4: HEALTH CHECK & TRAFFIC GENERATION
         // =========================================
         stage('4. Health Check & Traffic') {
             steps {
                 script {
                     echo "💓 [Check] Waiting for WebGoat to be alive..."
-                    // 1. Chờ ứng dụng Start (Health Check cơ bản)
-                    // ---------------------------------------------------------
                     boolean isReady = false
-                    for (int i = 1; i <= 30; i++) { // Thử 30 lần, mỗi lần 10s = 5 phút
+                    // Tăng thời gian chờ lên vì WebGoat khởi động khá lâu
+                    for (int i = 1; i <= 30; i++) { 
                         def status = sh(
                             script: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${APP_PORT}/WebGoat/login || echo '000'", 
                             returnStdout: true
                         ).trim()
                         
-                        echo ">>> [Attempt ${i}] Status: ${status}"
+                        echo ">>> [Attempt ${i}/30] Status: ${status}"
                         if (status == '200' || status == '302') {
                             isReady = true; break;
                         }
@@ -131,79 +132,55 @@ pipeline {
                     }
                     if (!isReady) error "❌ Timeout: WebGoat không phản hồi."
 
-                    // 2. Tạo Traffic đa dạng để Seeker phân tích
-                    // ---------------------------------------------------------
                     echo "🚦 [Traffic] Generating traffic for Seeker..."
                     
-                    // A. ĐĂNG NHẬP & LƯU COOKIE
-                    // Dùng cờ -c cookies.txt để lưu session ID sau khi login thành công
                     sh """
                         rm -f cookies.txt
                         echo ">>> 1. Login & Save Cookie..."
                         curl -s -k -c cookies.txt -X POST http://127.0.0.1:${APP_PORT}/WebGoat/login \\
                              -d "username=admin&password=password" \\
                              -H "Content-Type: application/x-www-form-urlencoded"
-                    """
 
-                    // B. GỌI CÁC API KHÁC (Dùng cookie đã lưu)
-                    // Dùng cờ -b cookies.txt để gửi kèm session ID
-                    sh """
                         echo ">>> 2. Accessing Welcome Page..."
                         curl -s -k -b cookies.txt -o /dev/null http://127.0.0.1:${APP_PORT}/WebGoat/welcome.mvc
                         
-                        echo ">>> 3. Listing Lessons (API)..."
-                        curl -s -k -b cookies.txt -o /dev/null http://127.0.0.1:${APP_PORT}/WebGoat/service/lessoninfo.mvc
-                        
-                        echo ">>> 4. Simulating SQL Injection Traffic..."
-                        # Đây là endpoint bài học SQL Injection. 
-                        # Việc gọi nó giúp Seeker nhận diện Controller xử lý SQL.
+                        echo ">>> 3. Simulating SQL Injection Traffic..."
                         curl -s -k -b cookies.txt -o /dev/null http://127.0.0.1:${APP_PORT}/WebGoat/SqlInjection/attack5a
-                        
-                        echo ">>> 5. Simulating User Profile Search (Data Flow)..."
-                        # Giả lập search user (API thường thấy trong WebGoat)
-                        curl -s -k -b cookies.txt -o /dev/null -X POST http://127.0.0.1:${APP_PORT}/WebGoat/SqlInjection/servers \\
-                             -H "Content-Type: application/x-www-form-urlencoded" \\
-                             -d "column=hostname"
                     """
                     
                     echo "✅ Traffic generation completed!"
-                    sleep 15 // Chờ một chút để Agent đẩy dữ liệu cuối cùng lên Server
+                    sleep 15 
                 }
             }
         }
+
         // =========================================
         // STAGE 5: QUALITY GATE
         // =========================================
-	stage('5. Quality Gate') {
+        stage('5. Quality Gate') {
             steps {
                 script {
                     echo "🛡️ [Gate] Checking Seeker Compliance..."
-                    
-                    // Thêm thời gian chờ để Server xử lý dữ liệu từ Agent gửi lên
                     echo ">>> Waiting 30s for Seeker Server to sync..."
                     sleep 30 
 
                     withCredentials([string(credentialsId: 'seeker-api-token', variable: 'SEEKER_API_TOKEN')]) {
-                        // FIX: Dùng dấu nháy đơn ''' cho sh để Shell tự xử lý biến môi trường
-                        // Điều này loại bỏ cảnh báo "Groovy String interpolation"
                         sh '''
                             rm -f response_body.json status_code.txt
                             
-                            echo ">>> [1] Kiểm tra xem Project đã tồn tại chưa..."
-                            # Gọi API list project trước vì API này luôn có dữ liệu nhanh hơn
+                            echo ">>> Checking Project Existence..."
                             curl -s -k -X GET "$SEEKER_SERVER_URL/rest/api/latest/projects" \
                                  -H "Authorization: $SEEKER_API_TOKEN" \
                                  -H "Accept: application/json" > projects_list.json
                             
-                            # Kiểm tra xem key có trong list không (dùng grep cho đơn giản)
                             if grep -q "$SEEKER_PROJECT_KEY" projects_list.json; then
-                                echo "✅ Project '$SEEKER_PROJECT_KEY' đã được tìm thấy trên Server."
+                                echo "✅ Project found."
                             else
-                                echo "❌ ERROR: Project chưa được tạo. Agent có thể chưa kết nối thành công."
+                                echo "❌ ERROR: Project not found."
                                 exit 1
                             fi
 
-                            echo ">>> [2] Kiểm tra trạng thái Compliance..."
+                            echo ">>> Checking Compliance Status..."
                             curl -s -k -o response_body.json -w "%{http_code}" \
                                 -X GET "$SEEKER_SERVER_URL/rest/api/latest/projects/$SEEKER_PROJECT_KEY/compliance-status" \
                                 -H "Authorization: $SEEKER_API_TOKEN" \
@@ -211,20 +188,13 @@ pipeline {
 
                             HTTP_CODE=$(cat status_code.txt)
                             BODY=$(cat response_body.json)
-
                             echo ">>> HTTP Code: $HTTP_CODE"
 
                             if [ "$HTTP_CODE" = "200" ]; then
                                 echo "✅ SUCCESS! Compliance Result:"
                                 echo "$BODY"
-                                # Logic fail build nếu cần:
-                                # if echo "$BODY" | grep -q "NON_COMPLIANT"; then exit 1; fi
-                                
                             elif [ "$HTTP_CODE" = "404" ]; then
-                                echo "⚠️ WARNING (404): Project tồn tại nhưng chưa có báo cáo Compliance."
-                                echo ">>> Lý do: Project mới tạo, Seeker đang phân tích."
-                                echo ">>> Bỏ qua lỗi này để Pipeline tiếp tục (Soft Pass)."
-                                
+                                echo "⚠️ WARNING (404): No compliance report yet. Soft Pass."
                             else
                                 echo "❌ UNEXPECTED ERROR: $BODY"
                                 exit 1
@@ -233,8 +203,9 @@ pipeline {
                     }
                 }
             }
-	}
-	// =========================================
+        }
+
+        // =========================================
         // STAGE 6: DEPLOY TO PRODUCTION (FIXED)
         // =========================================
         stage('6. Deploy to Production') {
@@ -245,17 +216,28 @@ pipeline {
                     def deployDir = "/opt/webgoat-live" 
                     def deployLog = "${deployDir}/app.log"
 
-                    // Dọn dẹp process cũ
+                    // 1. TÌM FILE JAR ĐÚNG (Lặp lại logic tìm file để chắc chắn)
+                    def webgoatJar = sh(script: 'find webgoat-server/target -name "webgoat-server*.jar" | grep -v "original" | head -n 1', returnStdout: true).trim()
+                    
+                    if (!webgoatJar) {
+                        // Fallback tìm file lớn
+                        webgoatJar = sh(script: 'find . -name "*.jar" -size +50M | grep -v "original" | head -n 1', returnStdout: true).trim()
+                    }
+                    if (!webgoatJar) error "❌ ERROR: Không tìm thấy file WebGoat Server để deploy!"
+                    echo "✅ Found JAR for Deploy: ${webgoatJar}"
+
+                    // 2. Dọn dẹp process cũ
                     sh "pkill -f webgoat || true"
                     sh "lsof -t -i:${APP_PORT} | xargs -r kill -9 || true"
                     sleep 5
 
-                    // Chuẩn bị thư mục
+                    // 3. Chuẩn bị thư mục & Copy file
                     sh "mkdir -p ${deployDir}/seeker"
-                    sh "cp target/webgoat-*.jar ${deployDir}/webgoat-app.jar"
+                    // COPY CHÍNH XÁC FILE TÌM ĐƯỢC
+                    sh "cp ${webgoatJar} ${deployDir}/webgoat-app.jar"
                     sh "cp -r seeker/* ${deployDir}/seeker/"
 
-                    // Khởi động ứng dụng
+                    // 4. Khởi động ứng dụng
                     echo ">>> Starting Application..."
                     withCredentials([string(credentialsId: 'seeker-agent-token', variable: 'SEEKER_ACCESS_TOKEN')]) {
                         sh """
@@ -288,7 +270,6 @@ pipeline {
             echo "❌ Build Failed! Check logs for details."
         }
         always {
-            // Archive logs for debugging
             archiveArtifacts artifacts: 'app_webgoat.log', allowEmptyArchive: true
         }
     }
