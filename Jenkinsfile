@@ -92,96 +92,96 @@ pipeline {
                     echo "[Check] Waiting for WebGoat & WebWolf (Test Instance)..."
                     boolean isReady = false
                 
-                    // 1. Health Check Loop (Kiểm tra cả WebGoat và WebWolf)
+                    // 1. Health Check Loop
                     for (int i = 1; i <= 60; i++) { 
-                        // Check WebGoat (9595)
-                        def statusGoat = sh(
-                            script: "curl -s -L -o /dev/null -w '%{http_code}' http://127.0.0.1:${TEST_PORT}/WebGoat/login || echo '000'", 
-                            returnStdout: true
-                        ).trim()
-                        
-                        // Check WebWolf (9096)
-                        def statusWolf = sh(
-                            script: "curl -s -L -o /dev/null -w '%{http_code}' http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/login || echo '000'", 
-                            returnStdout: true
-                        ).trim()
+                        def statusGoat = sh(script: "curl -s -L -o /dev/null -w '%{http_code}' http://127.0.0.1:${TEST_PORT}/WebGoat/login || echo '000'", returnStdout: true).trim()
+                        def statusWolf = sh(script: "curl -s -L -o /dev/null -w '%{http_code}' http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/login || echo '000'", returnStdout: true).trim()
                     
-                        // Chấp nhận 200 (OK) hoặc 302 (Redirect to login)
                         if ((statusGoat == '200' || statusGoat == '302') && (statusWolf == '200' || statusWolf == '302')) {
                             isReady = true;
                             echo "✅ All Services are UP! (WebGoat: ${statusGoat}, WebWolf: ${statusWolf})"
                             break;
                         }
-                        echo "Waiting... [WebGoat: ${statusGoat}, WebWolf: ${statusWolf}]"
                         sleep 5
                     }
 
-                    if (!isReady) {
-                        sh "cat app_webgoat_test.log"
-                        error "Timeout: Services did not start properly."
-                    }
+                    if (!isReady) error "Timeout: Services did not start properly."
 
-                    echo "[Traffic] Generating traffic for Seeker..."
+                    echo "[Traffic] Generating SMARTER traffic for Seeker..."
                     
-                    // 2. Traffic Generation Script
                     sh """
-                        rm -f cookies.txt cookies_wolf.txt
+                        rm -f cookies.txt cookies_wolf.txt wolf_page.html
                         
-                        # ====================================================
-                        # A. TRAFFIC WEBGOAT (Port ${TEST_PORT})
-                        # ====================================================
-                        echo "--- [WebGoat] Registering Account ---"
-                        curl -s -k -X POST http://127.0.0.1:${TEST_PORT}/WebGoat/register.mvc \\
-                             -d "username=webgoatadmin&password=password&matchingPassword=password&agree=agree" \\
-                             -H "Content-Type: application/x-www-form-urlencoded"
-
-                        echo "--- [WebGoat] Logging in ---"
+                        # --- 1. WEBGOAT TRAFFIC ---
+                        # (Giữ nguyên phần WebGoat vì nó đã chạy ổn)
                         curl -s -k -c cookies.txt -X POST http://127.0.0.1:${TEST_PORT}/WebGoat/login \\
                              -d "username=webgoatadmin&password=password" \\
-                             -H "Content-Type: application/x-www-form-urlencoded"
+                             -H "Content-Type: application/x-www-form-urlencoded" > /dev/null
 
-                        echo "--- [WebGoat] Basic Coverage ---"
                         curl -s -k -b cookies.txt -o /dev/null http://127.0.0.1:${TEST_PORT}/WebGoat/welcome.mvc
-                        curl -s -k -b cookies.txt -o /dev/null http://127.0.0.1:${TEST_PORT}/WebGoat/SqlInjection/attack5a
 
                         # ====================================================
-                        # B. TRAFFIC WEBWOLF (Port ${WOLF_TEST_PORT}) - NEW!
+                        # --- 2. WEBWOLF TRAFFIC (NÂNG CAO) ---
                         # ====================================================
-                        echo "--- [WebWolf] Logging in ---"
-                        # WebWolf cần login để truy cập các chức năng upload/mail
+                        
+                        echo ">>> [WebWolf] 1. Login & Get CSRF Token..."
+                        # Lưu trang login về file để tìm CSRF Token
+                        curl -s -k -c cookies_wolf.txt -L http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/login > wolf_login.html
+                        
+                        # Trích xuất CSRF Token (tìm dòng chứa _csrf)
+                        # WebGoat/WebWolf thường để token trong thẻ input hidden hoặc meta tag
+                        CSRF_TOKEN=\$(cat wolf_login.html | grep -oP 'name="_csrf" value="\\K[^"]+' || echo "none")
+                        
+                        echo "   + CSRF Token Found: \$CSRF_TOKEN"
+
+                        # Thực hiện Login thật sự kèm Token
                         curl -s -k -c cookies_wolf.txt -X POST http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/login \\
-                             -d "username=webgoatadmin&password=password" \\
-                             -H "Content-Type: application/x-www-form-urlencoded"
+                             -d "username=webgoatadmin&password=password&_csrf=\$CSRF_TOKEN" \\
+                             -H "Content-Type: application/x-www-form-urlencoded" > /dev/null
 
-                        # 1. Endpoint: /WebWolf/landing
-                        # Image shows: GET, POST, PUT, DELETE, PATCH, TRACE...
-                        echo "--- [WebWolf] Fuzzing: /landing ---"
-                        for method in GET POST PUT DELETE PATCH TRACE; do
-                            curl -s -k -b cookies_wolf.txt -X \$method -o /dev/null http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/landing || true
+                        echo ">>> [WebWolf] 2. Fuzzing /landing (Check Status Code)..."
+                        # Test GET (Không cần CSRF)
+                        CODE=\$(curl -s -k -b cookies_wolf.txt -w "%{http_code}" -o /dev/null http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/landing)
+                        echo "   + GET /landing -> \$CODE"
+
+                        # Test POST/PUT/DELETE (Cần CSRF Header)
+                        # Đối với Spring Security, thường cần gửi token qua header X-CSRF-TOKEN hoặc tham số _csrf
+                        for method in POST PUT DELETE PATCH; do
+                            CODE=\$(curl -s -k -b cookies_wolf.txt -X \$method \\
+                                -H "X-CSRF-TOKEN: \$CSRF_TOKEN" \\
+                                -w "%{http_code}" -o /dev/null \\
+                                http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/landing)
+                            echo "   + \$method /landing -> \$CODE"
                         done
 
-                        # 2. Endpoint: /WebWolf/file-server-location
-                        # Image shows: GET, POST, PUT, DELETE, OPTIONS, HEAD, TRACE, CONNECT...
-                        echo "--- [WebWolf] Fuzzing: /file-server-location ---"
-                        for method in GET POST PUT DELETE OPTIONS HEAD TRACE CONNECT; do
-                            curl -s -k -b cookies_wolf.txt -X \$method -o /dev/null http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/file-server-location || true
+                        echo ">>> [WebWolf] 3. Fuzzing /file-server-location (Simulate Upload)..."
+                        # Tạo file giả để upload
+                        echo "malicious data" > virus.txt
+                        
+                        # GET request
+                        curl -s -k -b cookies_wolf.txt -o /dev/null http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/file-server-location
+
+                        # POST Upload request (Multipart)
+                        CODE=\$(curl -s -k -b cookies_wolf.txt -X POST \\
+                            -H "X-CSRF-TOKEN: \$CSRF_TOKEN" \\
+                            -F "file=@virus.txt" \\
+                            -w "%{http_code}" -o /dev/null \\
+                            http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/file-server-location)
+                        echo "   + POST /file-server-location (Upload) -> \$CODE"
+                        
+                        # Loop các method lạ khác
+                        for method in OPTIONS HEAD TRACE CONNECT; do
+                            curl -s -k -b cookies_wolf.txt -X \$method -H "X-CSRF-TOKEN: \$CSRF_TOKEN" -o /dev/null http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/file-server-location || true
                         done
 
-                        # 3. Endpoint: /WebWolf/mail
-                        # Image shows: DELETE (và thường có GET)
-                        echo "--- [WebWolf] Fuzzing: /mail ---"
-                        curl -s -k -b cookies_wolf.txt -X GET -o /dev/null http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/mail || true
-                        curl -s -k -b cookies_wolf.txt -X DELETE -o /dev/null http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/mail || true
-
-                        # 4. Trigger Error Paths (\${server.error.path...})
-                        # Gửi request đến đường dẫn sai để kích hoạt error controller của Spring
-                        echo "--- [WebWolf] Triggering Error Pages ---"
-                        curl -s -k -b cookies_wolf.txt -X GET -o /dev/null http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/path-not-found-123 || true
+                        echo ">>> [WebWolf] 4. Triggering Errors..."
+                        # Request endpoint sai để kích hoạt ErrorController
+                        curl -s -k -b cookies_wolf.txt -X GET http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/error-trigger-page > /dev/null 2>&1 || true
                     """
                     
-                    echo "Traffic generation completed!"
+                    echo "[Traffic] Completed. Check logs above for HTTP 200/302 (Success) vs 403 (Failed)."
                     sleep 10 
-                     
+                    
                     echo "[Cleanup] Stopping Test Instance..."
                     sh """
                         lsof -t -i:${TEST_PORT} | xargs -r kill -9 || true
