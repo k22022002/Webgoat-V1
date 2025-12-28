@@ -115,30 +115,59 @@ pipeline {
 
                     echo "[Traffic] Generating traffic for Seeker..."
                     
-                    sh """
-                        rm -f cookies.txt
+		    sh """
+                        rm -f cookies.txt cookies_wolf.txt
                         
-                        
-                        # 1. ĐĂNG KÝ
-                        echo "--- Registering Account ---"
+                        # ==========================================
+                        # 1. TRAFFIC WEBGOAT (Port ${TEST_PORT})
+                        # ==========================================
+                        echo "--- [WebGoat] Registering Account ---"
                         curl -s -k -X POST http://127.0.0.1:${TEST_PORT}/WebGoat/register.mvc \\
                              -d "username=webgoatadmin&password=password&matchingPassword=password&agree=agree" \\
                              -H "Content-Type: application/x-www-form-urlencoded"
 
-                        # 2. LOGIN
-                        echo "--- Logging in ---"
-                        curl -s -k -c cookies.txt  -X POST http://127.0.0.1:${TEST_PORT}/WebGoat/login \\
+                        echo "--- [WebGoat] Logging in ---"
+                        curl -s -k -c cookies.txt -X POST http://127.0.0.1:${TEST_PORT}/WebGoat/login \\
                              -d "username=webgoatadmin&password=password" \\
                              -H "Content-Type: application/x-www-form-urlencoded"
 
-                        # 3. TẠO TRAFFIC
-                        echo "--- Accessing Welcome Page ---"
+                        echo "--- [WebGoat] Accessing Welcome Page ---"
                         curl -s -k -b cookies.txt -o /dev/null http://127.0.0.1:${TEST_PORT}/WebGoat/welcome.mvc
                         
-                        echo "--- Triggering SQL Injection Lesson ---"
+                        echo "--- [WebGoat] Triggering SQL Injection Lesson ---"
                         curl -s -k -b cookies.txt -o /dev/null http://127.0.0.1:${TEST_PORT}/WebGoat/SqlInjection/attack5a
-                    """
-                    
+
+                        # ==========================================
+                        # 2. TRAFFIC WEBWOLF (Port ${WOLF_TEST_PORT})
+                        # ==========================================
+                        # Dựa trên Image: Cần test các method GET, POST, PUT, DELETE, TRACE, OPTIONS, HEAD, PATCH
+                        
+                        echo "--- [WebWolf] Logging in (Creating session) ---"
+                        # WebWolf thường dùng chung user với WebGoat hoặc login riêng, ta login lại để lấy cookie riêng cho Wolf
+                        curl -s -k -c cookies_wolf.txt -X POST http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/login \\
+                             -d "username=webgoatadmin&password=password" \\
+                             -H "Content-Type: application/x-www-form-urlencoded"
+
+                        echo "--- [WebWolf] Fuzzing Endpoint: /landing ---"
+                        # Loop qua các method thấy trong ảnh cho endpoint /landing
+                        for method in GET POST PUT DELETE PATCH; do
+                            curl -s -k -b cookies_wolf.txt -X \$method -o /dev/null http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/landing || true
+                        done
+
+                        echo "--- [WebWolf] Fuzzing Endpoint: /file-server-location ---"
+                        # Loop qua các method thấy trong ảnh cho endpoint /file-server-location
+                        for method in GET POST PUT DELETE PATCH OPTIONS HEAD TRACE CONNECT; do
+                            curl -s -k -b cookies_wolf.txt -X \$method -o /dev/null http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/file-server-location || true
+                        done
+
+                        echo "--- [WebWolf] Fuzzing Endpoint: /mail ---"
+                        # Trong ảnh có method DELETE cho /mail
+                        curl -s -k -b cookies_wolf.txt -X DELETE -o /dev/null http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/mail || true
+                        curl -s -k -b cookies_wolf.txt -X GET -o /dev/null http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/mail || true
+
+                        # Trigger các lỗi 404/500 để hiện ra các path error (giống trong ảnh: \${server.error...})
+                        curl -s -k -b cookies_wolf.txt -X GET -o /dev/null http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/path-khong-ton-tai || true
+                    """                    
                     echo "Traffic generation completed!"
                     sleep 10 
                     
