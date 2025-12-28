@@ -233,6 +233,61 @@ pipeline {
                     }
                 }
             }
+	}
+	// =========================================
+        // STAGE 6: DEPLOY APPLICATION
+        // =========================================
+        stage('6. Deploy to Production') {
+            steps {
+                script {
+                    echo "🚀 [Deploy] Starting Deployment Process..."
+                    
+                    // Cấu hình thư mục deploy (Nên nằm ngoài Workspace để tránh bị xóa khi build mới)
+                    // Lưu ý: Đảm bảo user chạy Jenkins có quyền ghi vào thư mục này
+                    def deployDir = "/opt/webgoat-live" 
+                    def deployLog = "${deployDir}/app.log"
+
+                    // 1. Dọn dẹp process cũ (Test instance ở Stage 3 & 4)
+                    echo ">>> Stopping previous instances..."
+                    sh "pkill -f webgoat || true"
+                    sh "lsof -t -i:${APP_PORT} | xargs -r kill -9 || true"
+                    sleep 5
+
+                    // 2. Chuẩn bị thư mục Deploy
+                    echo ">>> Preparing Deployment Directory: ${deployDir}..."
+                    sh "mkdir -p ${deployDir}/seeker"
+                    
+                    // Copy File JAR & Seeker Agent sang thư mục Deploy
+                    sh "cp target/webgoat-*.jar ${deployDir}/webgoat-app.jar"
+                    sh "cp -r seeker/* ${deployDir}/seeker/"
+
+                    // 3. Khởi động ứng dụng (Production Mode)
+                    echo ">>> Starting Application..."
+                    withCredentials([string(credentialsId: 'seeker-agent-token', variable: 'SEEKER_ACCESS_TOKEN')]) {
+                        sh """
+                            export SEEKER_ACCESS_TOKEN=${SEEKER_ACCESS_TOKEN}
+                            # JENKINS_NODE_COOKIE="dontKillMe" đã được set ở environment đầu file
+                            # Biến này cực kỳ quan trọng để giữ process sống sau khi job kết thúc
+                            
+                            cd ${deployDir}
+                            nohup java \\
+                                --add-opens java.base/sun.nio.ch=ALL-UNNAMED \\
+                                --add-opens java.base/java.io=ALL-UNNAMED \\
+                                -Xmx2g \\
+                                -javaagent:${deployDir}/seeker/seeker-agent.jar \\
+                                -Dseeker.server.url=${SEEKER_SERVER_URL} \\
+                                -Dseeker.project.key=${SEEKER_PROJECT_KEY} \\
+                                -Dserver.port=${APP_PORT} \\
+                                -Dserver.address=0.0.0.0 \\
+                                -jar webgoat-app.jar \\
+                                > ${deployLog} 2>&1 &
+                        """
+                    }
+                    
+                    echo "✅ Application Deployed Successfully!"
+                    echo "👉 Access here: http://<YOUR_SERVER_IP>:${APP_PORT}/WebGoat"
+                }
+            }
         }
     }
 
