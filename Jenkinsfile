@@ -68,7 +68,7 @@ pipeline {
                     echo "🚀 [Run] Starting WebGoat + Seeker..."
 
                     // 1. Tìm file JAR
-		    def webgoatJar = sh(script: 'find . -name "webgoat-server*.jar" | grep -v "original" | head -n 1', returnStdout: true).trim()
+		    def webgoatJar = sh(script: 'find . -name "webgoat-*.jar" | grep -v "original" | grep -v "webwolf" | head -n 1', returnStdout: true).trim()
                     if (!webgoatJar) error "❌ ERROR: Không tìm thấy file .jar!"
                     echo ">>> Found JAR: ${webgoatJar}"
 
