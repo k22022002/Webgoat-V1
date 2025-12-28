@@ -65,18 +65,24 @@ pipeline {
                 script {
                     echo "🚀 [Run] Starting WebGoat + Seeker (Test Mode)..."
 
-                    // 1. TÌM FILE JAR CHÍNH XÁC (FIX QUAN TRỌNG)
-                    // Chỉ tìm trong webgoat-server/target để lấy đúng file Server thực thi
-                    def webgoatJar = sh(script: 'find webgoat-server/target -name "webgoat-server*.jar" | grep -v "original" | head -n 1', returnStdout: true).trim()
-                    
-                    // Fallback: Nếu không thấy, tìm file nặng > 50MB
-                    if (!webgoatJar) {
-                         webgoatJar = sh(script: 'find . -name "*.jar" -size +50M | grep -v "original" | head -n 1', returnStdout: true).trim()
-                    }
+		    // Tìm file JAR, ưu tiên webgoat-server và loại trừ webwolf
+// Bước 1: Thử tìm chính xác file có tên webgoat-server
+def webgoatJar = sh(script: 'find . -name "webgoat-server*.jar" | grep -v "original" | head -n 1', returnStdout: true).trim()
 
-                    if (!webgoatJar) error "❌ ERROR: Không tìm thấy file JAR thực thi (Fat JAR)!"
-                    echo ">>> Found JAR: ${webgoatJar}"
+// Bước 2: Nếu không thấy, tìm file jar lớn nhưng BẮT BUỘC loại trừ webwolf
+if (!webgoatJar) {
+    echo "⚠️ Không tìm thấy webgoat-server*.jar cụ thể, đang tìm file JAR > 50MB (loại trừ webwolf)..."
+    webgoatJar = sh(script: 'find . -name "*.jar" -size +50M | grep -v "original" | grep -v "webwolf" | grep -v "agent" | head -n 1', returnStdout: true).trim()
+}
 
+// Kiểm tra cuối cùng
+if (!webgoatJar) {
+    error "❌ ERROR: Không tìm thấy file JAR WebGoat nào hợp lệ!"
+} else if (webgoatJar.contains("webwolf")) {
+    error "❌ ERROR: Script đang chọn nhầm file WebWolf: ${webgoatJar}"
+}
+
+echo ">>> ✅ Selected JAR: ${webgoatJar}"
                     // 2. Cleanup Port cũ
                     sh """
                         pkill -f webgoat || true
@@ -216,16 +222,26 @@ pipeline {
                     def deployDir = "/opt/webgoat-live" 
                     def deployLog = "${deployDir}/app.log"
 
-                    // 1. TÌM FILE JAR ĐÚNG (Lặp lại logic tìm file để chắc chắn)
-                    def webgoatJar = sh(script: 'find webgoat-server/target -name "webgoat-server*.jar" | grep -v "original" | head -n 1', returnStdout: true).trim()
-                    
-                    if (!webgoatJar) {
-                        // Fallback tìm file lớn
-                        webgoatJar = sh(script: 'find . -name "*.jar" -size +50M | grep -v "original" | head -n 1', returnStdout: true).trim()
-                    }
-                    if (!webgoatJar) error "❌ ERROR: Không tìm thấy file WebGoat Server để deploy!"
-                    echo "✅ Found JAR for Deploy: ${webgoatJar}"
+		    // Thay thế đoạn tìm file cũ bằng đoạn này:
 
+// Tìm file JAR, ưu tiên webgoat-server và loại trừ webwolf
+// Bước 1: Thử tìm chính xác file có tên webgoat-server
+def webgoatJar = sh(script: 'find . -name "webgoat-server*.jar" | grep -v "original" | head -n 1', returnStdout: true).trim()
+
+// Bước 2: Nếu không thấy, tìm file jar lớn nhưng BẮT BUỘC loại trừ webwolf
+if (!webgoatJar) {
+    echo "⚠️ Không tìm thấy webgoat-server*.jar cụ thể, đang tìm file JAR > 50MB (loại trừ webwolf)..."
+    webgoatJar = sh(script: 'find . -name "*.jar" -size +50M | grep -v "original" | grep -v "webwolf" | grep -v "agent" | head -n 1', returnStdout: true).trim()
+}
+
+// Kiểm tra cuối cùng
+if (!webgoatJar) {
+    error "❌ ERROR: Không tìm thấy file JAR WebGoat nào hợp lệ!"
+} else if (webgoatJar.contains("webwolf")) {
+    error "❌ ERROR: Script đang chọn nhầm file WebWolf: ${webgoatJar}"
+}
+
+echo ">>> ✅ Selected JAR: ${webgoatJar}"
                     // 2. Dọn dẹp process cũ
                     sh "pkill -f webgoat || true"
                     sh "lsof -t -i:${APP_PORT} | xargs -r kill -9 || true"
