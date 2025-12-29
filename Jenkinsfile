@@ -163,73 +163,87 @@ pipeline {
             steps {
                 script {
                     echo "🛡️ [Gate] Checking Seeker Compliance..."
-                    sleep 30 
+                    sleep 10 
                     
+                    // Cấu hình ngưỡng (Fail nếu có bất kỳ lỗi Critical hoặc High nào)
                     int maxCritical = 0
                     int maxHigh = 0
 
                     withCredentials([string(credentialsId: 'seeker-api-token', variable: 'SEEKER_API_TOKEN')]) {
+                        // URL giữ nguyên như bạn đã chạy thành công
                         def apiUrl = "http://192.168.12.190:8082/rest/api/latest/vulnerabilities?format=JSON&projectKeys=${SEEKER_PROJECT_KEY}&status=DETECTED&minSeverity=HIGH"
                         
                         echo "🔍 Querying Seeker API: ${apiUrl}"
 
                         try {
-                            // --- FIX 1: Thêm '-v' để debug Header và xử lý lỗi Text ---
-                            // Chúng ta lưu cả stderr (2>&1) để xem log kết nối nếu curl fail
                             def response = sh(
-                                script: 'curl -v -s -k -X GET -H "Authorization: $SEEKER_API_TOKEN" -H "accept: */*" "' + apiUrl + '"',
+                                script: 'curl -s -k -X GET -H "Authorization: $SEEKER_API_TOKEN" -H "accept: */*" "' + apiUrl + '"',
                                 returnStdout: true
                             ).trim()
 
-                            // --- FIX 2: Kiểm tra nếu Server trả về Plain Text báo lỗi ---
-                            if (response.startsWith("Credentials are required") || response.startsWith("Unauthorized")) {
-                                echo "🔴 AUTHENTICATION ERROR: Server rejected the token."
-                                echo "👉 Please check: Is the token inside Jenkins Credentials correct? (It should start with 'eyJ...' and NOT contain 'Bearer ' word)"
-                                error "❌ API Auth Failed: ${response}"
-                            }
-
-                            // --- FIX 3: Chỉ Parse JSON nếu ký tự đầu là '{' hoặc '[' ---
-                            if (!response.startsWith("{") && !response.startsWith("[")) {
-                                echo "⚠️ Raw Response: ${response}"
-                                error "❌ Invalid Response Format: Server did not return JSON."
+                            if (!response || !response.startsWith("{")) {
+                                error "❌ Invalid Response: ${response}"
                             }
 
                             def jsonResult = new groovy.json.JsonSlurper().parseText(response)
                             
-                            // Kiểm tra lỗi logic từ API
-                            if (jsonResult instanceof Map && jsonResult.containsKey('code') && jsonResult.code != 200) {
-                                error "❌ API Error: ${jsonResult.message} (HTTP ${jsonResult.code})"
-                            }
-
                             // Lấy danh sách lỗi
                             def vulnList = []
-                            if (jsonResult instanceof List) {
-                                vulnList = jsonResult
-                            } else if (jsonResult instanceof Map) {
-                                if (jsonResult.containsKey('content')) vulnList = jsonResult.content
-                                else if (jsonResult.containsKey('vulnerabilities')) vulnList = jsonResult.vulnerabilities
-                            }
+                            if (jsonResult instanceof List) vulnList = jsonResult
+                            else if (jsonResult instanceof Map && jsonResult.containsKey('content')) vulnList = jsonResult.content
+                            else if (jsonResult instanceof Map && jsonResult.containsKey('vulnerabilities')) vulnList = jsonResult.vulnerabilities
 
                             echo "📊 Found ${vulnList.size()} vulnerabilities."
 
-                            // Đếm lỗi
+                            // --- PHẦN QUAN TRỌNG NHẤT: DEBUG CẤU TRÚC JSON ---
+                            if (vulnList.size() > 0) {
+                                echo "================ DEBUG INFO ================"
+                                echo "🔍 Cấu trúc lỗi đầu tiên (Copy dòng này nếu vẫn lỗi):"
+                                // In ra toàn bộ key-value của lỗi đầu tiên để xem 'severity' nó là cái gì
+                                echo "${vulnList[0]}" 
+                                echo "============================================"
+                            }
+                            // -----------------------------------------------
+
                             int criticalCount = 0
                             int highCount = 0
+                            def failReasons = []
 
                             vulnList.each { vuln ->
-                                def sev = vuln.severity ? vuln.severity.toString().toUpperCase() : "UNKNOWN"
-                                if (sev == 'CRITICAL') criticalCount++
-                                if (sev == 'HIGH') highCount++
+                                // FIX: Lấy severity an toàn hơn (xử lý cả String lẫn Object)
+                                String currentSev = "UNKNOWN"
+                                
+                                if (vuln.severity instanceof String) {
+                                    currentSev = vuln.severity
+                                } else if (vuln.severity instanceof Map && vuln.severity.containsKey('name')) {
+                                    // Trường hợp nó là Object: {"name": "High", ...}
+                                    currentSev = vuln.severity.name
+                                } else if (vuln.containsKey('severityString')) {
+                                    // Trường hợp field tên là severityString
+                                    currentSev = vuln.severityString
+                                }
+
+                                // Chuẩn hóa về chữ in hoa để so sánh
+                                currentSev = currentSev.trim().toUpperCase()
+
+                                if (currentSev == 'CRITICAL') {
+                                    criticalCount++
+                                    failReasons.add("[CRITICAL] ${vuln.vulnerabilityName}")
+                                }
+                                if (currentSev == 'HIGH') {
+                                    highCount++
+                                    failReasons.add("[HIGH] ${vuln.vulnerabilityName}")
+                                }
                             }
 
                             echo "📊 Seeker Report Summary:"
-                            echo "   - Critical: ${criticalCount} (Max allowed: ${maxCritical})"
-                            echo "   - High:     ${highCount} (Max allowed: ${maxHigh})"
+                            echo "   - Critical: ${criticalCount} / Allowed: ${maxCritical}"
+                            echo "   - High:     ${highCount} / Allowed: ${maxHigh}"
 
                             if (criticalCount > maxCritical || highCount > maxHigh) {
-                                def criticalNames = vulnList.findAll { it.severity == 'CRITICAL' }.collect { it.vulnerabilityName }
-                                if (criticalNames) echo "   [!] Critical Issues: ${criticalNames}"
-                                error "❌ Quality Gate FAILED."
+                                echo "🔴 Details of violations:"
+                                failReasons.each { echo "   - ${it}" }
+                                error "❌ Quality Gate FAILED: Found ${criticalCount} Critical & ${highCount} High vulnerabilities."
                             } else {
                                 echo "✅ Quality Gate PASSED."
                             }
