@@ -169,7 +169,7 @@ pipeline {
                     int maxHigh = 0
 
                     withCredentials([string(credentialsId: 'seeker-api-token', variable: 'SEEKER_API_TOKEN')]) {
-                        def apiUrl = "https://192.168.12.190:8082/rest/api/latest/vulnerabilities?format=JSON&projectKeys=${SEEKER_PROJECT_KEY}&status=DETECTED&minSeverity=HIGH"
+                        def apiUrl = "http://192.168.12.190:8082/rest/api/latest/vulnerabilities?format=JSON&projectKeys=${SEEKER_PROJECT_KEY}&status=DETECTED&minSeverity=HIGH"
                         
                         echo "🔍 Querying Seeker API: ${apiUrl}"
 
@@ -177,7 +177,7 @@ pipeline {
                             // --- FIX 1: Thêm '-v' để debug Header và xử lý lỗi Text ---
                             // Chúng ta lưu cả stderr (2>&1) để xem log kết nối nếu curl fail
                             def response = sh(
-                                script: 'curl -v -s -k -X GET -H "Authorization:Bearer  $SEEKER_API_TOKEN" -H "accept: */*" "' + apiUrl + '"',
+                                script: 'curl -v -s -k -X GET -H "Authorization: $SEEKER_API_TOKEN" -H "accept: */*" "' + apiUrl + '"',
                                 returnStdout: true
                             ).trim()
 
