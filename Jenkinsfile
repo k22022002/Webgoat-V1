@@ -165,12 +165,10 @@ pipeline {
                     echo "🛡️ [Gate] Checking Seeker Compliance..."
                     sleep 10 
                     
-                    // Cấu hình ngưỡng (Fail nếu có bất kỳ lỗi Critical hoặc High nào)
                     int maxCritical = 0
                     int maxHigh = 0
 
                     withCredentials([string(credentialsId: 'seeker-api-token', variable: 'SEEKER_API_TOKEN')]) {
-                        // URL giữ nguyên như bạn đã chạy thành công
                         def apiUrl = "http://192.168.12.190:8082/rest/api/latest/vulnerabilities?format=JSON&projectKeys=${SEEKER_PROJECT_KEY}&status=DETECTED&minSeverity=HIGH"
                         
                         echo "🔍 Querying Seeker API: ${apiUrl}"
@@ -181,58 +179,46 @@ pipeline {
                                 returnStdout: true
                             ).trim()
 
-                            if (!response || !response.startsWith("{")) {
-                                error "❌ Invalid Response: ${response}"
+                            // --- FIX 1: Chấp nhận cả Object '{' và Array '[' ---
+                            if (!response || (!response.startsWith("{") && !response.startsWith("["))) {
+                                // Nếu không phải JSON, in ra để debug (thường là lỗi Auth)
+                                echo "⚠️ Raw Response: ${response}"
+                                error "❌ Invalid Response Format: Server did not return JSON."
                             }
 
                             def jsonResult = new groovy.json.JsonSlurper().parseText(response)
                             
-                            // Lấy danh sách lỗi
+                            // --- FIX 2: Xử lý linh hoạt List/Map ---
                             def vulnList = []
-                            if (jsonResult instanceof List) vulnList = jsonResult
-                            else if (jsonResult instanceof Map && jsonResult.containsKey('content')) vulnList = jsonResult.content
-                            else if (jsonResult instanceof Map && jsonResult.containsKey('vulnerabilities')) vulnList = jsonResult.vulnerabilities
+                            if (jsonResult instanceof List) {
+                                // Trường hợp của bạn: API trả về trực tiếp mảng lỗi [ {...}, {...} ]
+                                vulnList = jsonResult
+                            } else if (jsonResult instanceof Map) {
+                                // Trường hợp API trả về Object bọc ngoài
+                                if (jsonResult.containsKey('content')) vulnList = jsonResult.content
+                                else if (jsonResult.containsKey('vulnerabilities')) vulnList = jsonResult.vulnerabilities
+                                else if (jsonResult.containsKey('code') && jsonResult.code != 200) {
+                                     error "❌ API Error: ${jsonResult.message}"
+                                }
+                            }
 
                             echo "📊 Found ${vulnList.size()} vulnerabilities."
-
-                            // --- PHẦN QUAN TRỌNG NHẤT: DEBUG CẤU TRÚC JSON ---
-                            if (vulnList.size() > 0) {
-                                echo "================ DEBUG INFO ================"
-                                echo "🔍 Cấu trúc lỗi đầu tiên (Copy dòng này nếu vẫn lỗi):"
-                                // In ra toàn bộ key-value của lỗi đầu tiên để xem 'severity' nó là cái gì
-                                echo "${vulnList[0]}" 
-                                echo "============================================"
-                            }
-                            // -----------------------------------------------
 
                             int criticalCount = 0
                             int highCount = 0
                             def failReasons = []
 
                             vulnList.each { vuln ->
-                                // FIX: Lấy severity an toàn hơn (xử lý cả String lẫn Object)
-                                String currentSev = "UNKNOWN"
-                                
-                                if (vuln.severity instanceof String) {
-                                    currentSev = vuln.severity
-                                } else if (vuln.severity instanceof Map && vuln.severity.containsKey('name')) {
-                                    // Trường hợp nó là Object: {"name": "High", ...}
-                                    currentSev = vuln.severity.name
-                                } else if (vuln.containsKey('severityString')) {
-                                    // Trường hợp field tên là severityString
-                                    currentSev = vuln.severityString
-                                }
-
-                                // Chuẩn hóa về chữ in hoa để so sánh
-                                currentSev = currentSev.trim().toUpperCase()
+                                // --- FIX 3: Lấy Severity đơn giản (vì log cho thấy nó là String) ---
+                                String currentSev = vuln.Severity ? vuln.Severity.toString().trim().toUpperCase() : "UNKNOWN"
 
                                 if (currentSev == 'CRITICAL') {
                                     criticalCount++
-                                    failReasons.add("[CRITICAL] ${vuln.vulnerabilityName}")
+                                    failReasons.add("[CRITICAL] ${vuln.VulnerabilityName}")
                                 }
                                 if (currentSev == 'HIGH') {
                                     highCount++
-                                    failReasons.add("[HIGH] ${vuln.vulnerabilityName}")
+                                    failReasons.add("[HIGH] ${vuln.VulnerabilityName}")
                                 }
                             }
 
