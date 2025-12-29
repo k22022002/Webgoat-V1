@@ -177,7 +177,7 @@ pipeline {
                             // --- FIX 1: Thêm '-v' để debug Header và xử lý lỗi Text ---
                             // Chúng ta lưu cả stderr (2>&1) để xem log kết nối nếu curl fail
                             def response = sh(
-                                script: 'curl -v -s -k -X GET -H "Authorization: $SEEKER_API_TOKEN" -H "accept: */*" "' + apiUrl + '"',
+                                script: 'curl -v -s -k -X GET -H "Authorization:Bearer  $SEEKER_API_TOKEN" -H "accept: */*" "' + apiUrl + '"',
                                 returnStdout: true
                             ).trim()
 
