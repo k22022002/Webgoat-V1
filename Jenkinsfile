@@ -159,15 +159,69 @@ pipeline {
                 }
             }
         }
-        stage('5. Quality Gate') {
+	stage('5. Quality Gate') {
             steps {
                 script {
                     echo "🛡️ [Gate] Checking Seeker Compliance..."
+                    
+                    // 1. Chờ Seeker phân tích dữ liệu từ bước Traffic (quan trọng)
+                    // Seeker cần thời gian để xử lý request và confirm lỗ hổng
                     sleep 30 
+                    
+                    // 2. Định nghĩa ngưỡng chấp nhận (Threshold)
+                    int maxCritical = 0  // Không chấp nhận lỗi Critical nào
+                    int maxHigh = 0      // Không chấp nhận lỗi High nào (tùy chỉnh)
+
                     withCredentials([string(credentialsId: 'seeker-api-token', variable: 'SEEKER_API_TOKEN')]) {
-                        sh '''
-                            echo "✅ (Mock) Quality Gate Passed for Demo" 
-                        '''
+                        // 3. Xây dựng URL API để lấy các lỗ hổng đã được xác nhận (DETECTED)
+                        // Filter: Project Key, Status=DETECTED, Severity=CRITICAL hoặc HIGH
+                        // Lưu ý: Endpoint này trả về danh sách chi tiết
+                        def apiUrl = "${SEEKER_SERVER_URL}/rest/api/latest/vulnerabilities?projectKeys=${SEEKER_PROJECT_KEY}&status=DETECTED&minSeverity=HIGH"
+                        
+                        echo "🔍 Querying Seeker API: ${apiUrl}"
+
+                        try {
+                            // Gọi API bằng curl
+                            def response = sh(
+                                script: "curl -s -k -H 'Authorization: Bearer ${SEEKER_API_TOKEN}' -H 'Accept: application/json' '${apiUrl}'",
+                                returnStdout: true
+                            ).trim()
+
+                            // Parse JSON bằng JsonSlurper
+                            def vulnerabilities = new groovy.json.JsonSlurper().parseText(response)
+                            
+                            // Đếm số lượng lỗi theo mức độ
+                            int criticalCount = 0
+                            int highCount = 0
+
+                            // Duyệt qua danh sách lỗi trả về
+                            vulnerabilities.each { vuln ->
+                                if (vuln.severity == 'CRITICAL') criticalCount++
+                                if (vuln.severity == 'HIGH') highCount++
+                            }
+
+                            echo "📊 Seeker Report Summary:"
+                            echo "   - Critical: ${criticalCount} (Max allowed: ${maxCritical})"
+                            echo "   - High:     ${highCount} (Max allowed: ${maxHigh})"
+
+                            // 4. Kiểm tra điều kiện (Quality Gate Logic)
+                            if (criticalCount > maxCritical || highCount > maxHigh) {
+                                echo "🔴 Vulnerability Threshold Exceeded!"
+                                
+                                // In ra tên các lỗi Critical để dễ fix
+                                def criticalNames = vulnerabilities.findAll { it.severity == 'CRITICAL' }.collect { it.vulnerabilityName }
+                                echo "   List of CRITICAL issues: ${criticalNames}"
+                                
+                                error "❌ Quality Gate FAILED: Security standards not met."
+                            } else {
+                                echo "✅ Quality Gate PASSED: Application is secure enough for production."
+                            }
+
+                        } catch (Exception e) {
+                            echo "⚠️ Error querying Seeker API: ${e.getMessage()}"
+                            // Tùy chọn: Có thể error() luôn hoặc cho qua nếu API lỗi
+                            // error "❌ Failed to contact Security Server."
+                        }
                     }
                 }
             }
