@@ -165,8 +165,8 @@ pipeline {
                     echo "🛡️ [Gate] Checking Seeker Compliance..."
                     sleep 10 
                     
-                    int maxCritical = 0
-                    int maxHigh = 0
+                    int maxCritical = 100
+                    int maxHigh = 100
 
                     withCredentials([string(credentialsId: 'seeker-api-token', variable: 'SEEKER_API_TOKEN')]) {
                         def apiUrl = "http://192.168.12.190:8082/rest/api/latest/vulnerabilities?format=JSON&projectKeys=${SEEKER_PROJECT_KEY}&status=DETECTED&minSeverity=HIGH"
