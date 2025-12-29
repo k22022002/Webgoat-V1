@@ -169,17 +169,20 @@ pipeline {
                     int maxHigh = 0
 
                     withCredentials([string(credentialsId: 'seeker-api-token', variable: 'SEEKER_API_TOKEN')]) {
-                        def apiUrl = "${SEEKER_SERVER_URL}/rest/api/latest/vulnerabilities?projectKeys=${SEEKER_PROJECT_KEY}&status=DETECTED&minSeverity=HIGH"
+                        // Lưu ý: IP giữ nguyên, chỉ thay port và protocol
+                        // Thêm tham số 'format=JSON' để ép kiểu dữ liệu trả về
+                        def apiUrl = "http://192.168.12.190:8082/rest/api/latest/vulnerabilities?format=JSON&language=en&projectKeys=${SEEKER_PROJECT_KEY}&status=DETECTED&minSeverity=HIGH"
                         
+                        echo "🔍 Querying Seeker API: ${apiUrl}"
+
                         try {
-                            // --- FIX 1: Bảo mật (Dùng nháy đơn cho lệnh sh để tránh lộ token) ---
-                            // Chúng ta map biến môi trường vào shell
+                            // --- FIX 2: Header 'accept: */*' và dùng curl -k (bỏ qua SSL self-signed) ---
                             def response = sh(
-                                script: 'curl -s -k -H "Authorization: Bearer $SEEKER_API_TOKEN" -H "Accept: application/json" "' + apiUrl + '"',
+                                script: 'curl -s -k -X GET -H "Authorization: Bearer $SEEKER_API_TOKEN" -H "accept: */*" "' + apiUrl + '"',
                                 returnStdout: true
                             ).trim()
 
-                            // --- DEBUG: In ra cấu trúc JSON để kiểm tra (ẩn bớt nếu quá dài) ---
+                            // --- DEBUG: In ra một phần response để kiểm tra ---
                             echo "🔍 Raw Response (First 200 chars): ${response.take(200)}..."
 
                             if (!response || response == "") {
@@ -187,37 +190,29 @@ pipeline {
                             }
 
                             def jsonResult = new groovy.json.JsonSlurper().parseText(response)
-                            def vulnList = []
-
-                            // --- FIX 2: Xử lý linh hoạt cấu trúc JSON (List vs Map) ---
-                            if (jsonResult instanceof List) {
-                                // Trường hợp trả về mảng trực tiếp: [ {...}, {...} ]
-                                vulnList = jsonResult
-                            } else if (jsonResult instanceof Map) {
-                                // Trường hợp trả về Object phân trang: { "content": [...], "total": 10 }
-                                // Hoặc { "data": [...] }
-                                if (jsonResult.containsKey('content')) {
-                                    vulnList = jsonResult.content
-                                } else if (jsonResult.containsKey('vulnerabilities')) {
-                                    vulnList = jsonResult.vulnerabilities
-                                } else {
-                                    // Nếu Map không có key chứa list, có thể chính Map là lỗi hoặc API Error
-                                    echo "⚠️ JSON is a Map but structure is unknown. Keys: ${jsonResult.keySet()}"
-                                    // Thử giả định đây là lỗi đơn lẻ nếu có field severity
-                                    if (jsonResult.containsKey('severity')) {
-                                        vulnList.add(jsonResult)
-                                    }
-                                }
+                            
+                            // Kiểm tra lỗi API (nếu có)
+                            if (jsonResult instanceof Map && jsonResult.containsKey('code') && jsonResult.code != 200) {
+                                error "❌ API Error: ${jsonResult.message} (HTTP ${jsonResult.code})"
                             }
 
-                            echo "📊 Found ${vulnList.size()} vulnerabilities in report."
+                            // Xử lý dữ liệu (Seeker trả về list hoặc map tùy version)
+                            def vulnList = []
+                            if (jsonResult instanceof List) {
+                                vulnList = jsonResult
+                            } else if (jsonResult instanceof Map) {
+                                if (jsonResult.containsKey('content')) vulnList = jsonResult.content
+                                else if (jsonResult.containsKey('vulnerabilities')) vulnList = jsonResult.vulnerabilities
+                                else echo "⚠️ Unknown JSON structure, attempting to verify keys..."
+                            }
+
+                            echo "📊 Found ${vulnList.size()} vulnerabilities."
 
                             // Đếm lỗi
                             int criticalCount = 0
                             int highCount = 0
 
                             vulnList.each { vuln ->
-                                // Kiểm tra null safe
                                 def sev = vuln.severity ? vuln.severity.toString().toUpperCase() : "UNKNOWN"
                                 if (sev == 'CRITICAL') criticalCount++
                                 if (sev == 'HIGH') highCount++
@@ -228,18 +223,16 @@ pipeline {
                             echo "   - High:     ${highCount} (Max allowed: ${maxHigh})"
 
                             if (criticalCount > maxCritical || highCount > maxHigh) {
+                                def criticalNames = vulnList.findAll { it.severity == 'CRITICAL' }.collect { it.vulnerabilityName }
+                                if (criticalNames) echo "   [!] Critical Issues: ${criticalNames}"
                                 error "❌ Quality Gate FAILED: Security standards not met."
                             } else {
                                 echo "✅ Quality Gate PASSED."
                             }
 
                         } catch (Exception e) {
-                            echo "⚠️ Error processing Seeker API: ${e.getMessage()}"
-                            // Uncomment dòng dưới nếu muốn in full stacktrace
-                            // echo e.toString()
-                            
-                            // Tạm thời KHÔNG fail build nếu API lỗi format, chỉ cảnh báo để bạn debug
-                            echo "⚠️ Build will continue despite API parsing error (Debug mode)."
+                            echo "⚠️ Script Error: ${e.getMessage()}"
+                            error "❌ Failed to verify Quality Gate."
                         }
                     }
                 }
