@@ -47,7 +47,7 @@ pipeline {
                     echo "🚀 [Run] Starting WebGoat 2025 (Test Mode)..."
 
                     // Logic tìm file JAR (Không đổi)
-                    def webgoatJar = sh(script: 'find . -type f -name "webgoat-server*.jar" | grep -v "original" | grep -v "webwolf" | head -n 1', returnStdout: true).trim()
+                    def webgoatJar = sh(script: 'find . -type f -name "webgoat-*.jar" | grep -v "original" | grep -v "webwolf" | head -n 1', returnStdout: true).trim()
 
                     if (!webgoatJar) error "❌ ERROR: Không tìm thấy file JAR!"
                     
@@ -182,7 +182,7 @@ pipeline {
                 script {
                     echo "🚀 [Deploy] Deploying v2025.3 to Production..."
                     def deployDir = "/opt/webgoat-live"
-                    def webgoatJar = sh(script: 'find . -type f -name "webgoat-server*.jar" | grep -v "original" | grep -v "webwolf" | head -n 1', returnStdout: true).trim()
+                    def webgoatJar = sh(script: 'find . -type f -name "webgoat-*.jar" | grep -v "original" | grep -v "webwolf" | head -n 1', returnStdout: true).trim()
 
                     sh "pkill -f webgoat || true"
                     sh "mkdir -p ${deployDir}/seeker"
