@@ -2,18 +2,23 @@ pipeline {
     agent any
 
     tools {
-        maven 'Maven3.9.11'
-        jdk 'JDK 21'
+        // Cập nhật JDK lên phiên bản 25 theo yêu cầu trong README 
+        // Lưu ý: Cần đảm bảo Jenkins Global Tool Configuration đã cấu hình 'JDK 25'
+        jdk 'JDK 25' 
+        // Vẫn giữ Maven tool phòng trường hợp script cần, nhưng sẽ ưu tiên dùng ./mvnw
+        maven 'Maven3.9.11' 
     }
 
     environment {
-        // --- FIX 1: Đổi sang cổng 9595 để né hoàn toàn lỗi "Port in use" ở 9090 ---
         TEST_PORT = "9595" 
         PROD_PORT = "8090"
         
         SEEKER_SERVER_URL  = "http://192.168.12.190:8082"
         SEEKER_PROJECT_KEY = "webgoat-2025-demo"
-        JENKINS_NODE_COOKIE = "dontKillMe" 
+        JENKINS_NODE_COOKIE = "dontKillMe"
+        
+        // Thêm cấu hình Timezone theo khuyến nghị của README (ví dụ: Asia/Ho_Chi_Minh) 
+        TZ = "Asia/Ho_Chi_Minh"
     }
 
     stages {
@@ -21,7 +26,10 @@ pipeline {
             steps {
                 script {
                     echo "🚀 [Build] Compiling WebGoat v2025.3..."
-                    sh "mvn clean install -DskipTests -Dmaven.test.skip=true -Dprocess-exec.skip=true"
+                    // SỬA ĐỔI: Dùng ./mvnw clean install theo hướng dẫn 'Run from sources' 
+                    // Thêm chmod để đảm bảo quyền thực thi
+                    sh "chmod +x mvnw"
+                    sh "./mvnw clean install -DskipTests -Dmaven.test.skip=true -Dprocess-exec.skip=true"
                 }
             }
         }
@@ -48,10 +56,10 @@ pipeline {
                 script {
                     echo "🚀 [Run] Starting WebGoat 2025 (Test Mode on Port ${TEST_PORT})..."
 
+                    // Tìm file JAR (WebGoat 2023.8+ cấu trúc tên có thể thay đổi, lệnh này vẫn giữ nguyên để tìm file sinh ra)
                     def webgoatJar = sh(script: 'find . -type f -name "webgoat-*.jar" | grep -v "original" | grep -v "webwolf" | head -n 1', returnStdout: true).trim()
                     if (!webgoatJar) error "❌ ERROR: No JAR file found!"
                     
-                    // --- FIX 2: Clean up kỹ càng hơn trước khi chạy ---
                     sh """
                         echo ">>> Cleaning up port ${TEST_PORT}..."
                         fuser -k ${TEST_PORT}/tcp || true
@@ -63,9 +71,14 @@ pipeline {
                         sh """
                             export SEEKER_ACCESS_TOKEN=${SEEKER_ACCESS_TOKEN}
                             
-                            # --- FIX 3: Chạy trên cổng 9595 và WebWolf 9096 ---
+                            # SỬA ĐỔI: Chỉnh sửa tham số chạy theo mục "3.1 Running on a different port" trong README 
+                            # - Loại bỏ --server.port (WebGoat tự map từ webgoat.port)
+                            # - Giữ --server.address=0.0.0.0 để bind IP (Mục 4 README)
+                            # - Thêm Timezone
+                            
                             nohup java \\
                                 -Dfile.encoding=UTF-8 \\
+                                -Duser.timezone=${TZ} \\
                                 --add-opens java.base/java.lang=ALL-UNNAMED \\
                                 --add-opens java.base/java.util=ALL-UNNAMED \\
                                 --add-opens java.base/sun.nio.ch=ALL-UNNAMED \\
@@ -74,9 +87,7 @@ pipeline {
                                 -Dseeker.server.url=${SEEKER_SERVER_URL} \\
                                 -Dseeker.project.key=${SEEKER_PROJECT_KEY} \\
                                 -jar ${webgoatJar} \\
-                                --server.port=${TEST_PORT} \\
                                 --server.address=0.0.0.0 \\
-                                --server.servlet.context-path=/WebGoat \\
                                 --webgoat.port=${TEST_PORT} \\
                                 --webwolf.port=9096 \\
                                 > app_webgoat_test.log 2>&1 < /dev/null &
@@ -86,25 +97,32 @@ pipeline {
             }
         }
 
-        stage('4. Health Check & Traffic') {
+	stage('4. Health Check & Traffic') {
             steps {
                 script {
                     echo "💓 [Check] Waiting for WebGoat (Test Instance)..."
                     boolean isReady = false
-                    
-                    // --- FIX 4: Check cổng 9595 ---
-                    for (int i = 1; i <= 30; i++) { 
+                
+                    // Tăng số lần thử lên 60 lần x 5s = 5 phút tối đa (An toàn cho Java 25 start-up)
+                    for (int i = 1; i <= 60; i++) { 
+                        // Sử dụng curl -L để follow redirect. WebGoat sẽ redirect / -> /login
+                        // Chúng ta mong đợi code 200 khi đã load được trang Login thành công
                         def status = sh(
-                            script: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${TEST_PORT}/WebGoat/login || echo '000'", 
+                            script: "curl -s -L -o /dev/null -w '%{http_code}' http://127.0.0.1:${TEST_PORT}/WebGoat/login || echo '000'", 
                             returnStdout: true
                         ).trim()
+                    
+                        echo ">>> [Attempt ${i}/60] Status: ${status}"
                         
-                        echo ">>> [Attempt ${i}/30] Status: ${status}"
-                        if (status == '200' || status == '302'|| status == '401' ) {
-                            isReady = true; break;
+                        // Chấp nhận 200 (Load OK) hoặc 401 (Unauthorized - tức là app đã chạy và chặn truy cập)
+                        if (status == '200' || status == '401') {
+                            isReady = true;
+                            echo "✅ WebGoat is UP and Ready!"
+                            break;
                         }
-                        sleep 10
+                        sleep 5
                     }
+
                     if (!isReady) {
                         sh "cat app_webgoat_test.log"
                         error "❌ Timeout: WebGoat Test Instance did not start on port ${TEST_PORT}."
@@ -112,27 +130,32 @@ pipeline {
 
                     echo "🚦 [Traffic] Generating traffic for Seeker..."
                     
-                    // --- FIX 5: Bắn traffic vào cổng 9595 ---
+                    // Bắn traffic với cookie jar để giả lập session
                     sh """
                         rm -f cookies.txt
-                        curl -s -k -c cookies.txt -X POST http://127.0.0.1:${TEST_PORT}/WebGoat/login \\
+                        # 1. Login để lấy Session Cookie
+                        echo "--- Logging in ---"
+                        curl -s -k -c cookies.txt -L -X POST http://127.0.0.1:${TEST_PORT}/WebGoat/login \\
                              -d "username=admin&password=password" \\
                              -H "Content-Type: application/x-www-form-urlencoded"
 
+                        # 2. Truy cập trang Welcome (Authenticated)
+                        echo "--- Accessing Welcome Page ---"
                         curl -s -k -b cookies.txt -o /dev/null http://127.0.0.1:${TEST_PORT}/WebGoat/welcome.mvc
+                        
+                        # 3. Trigger một lỗ hổng giả lập (SQL Injection lesson)
+                        echo "--- Triggering SQL Injection Lesson ---"
                         curl -s -k -b cookies.txt -o /dev/null http://127.0.0.1:${TEST_PORT}/WebGoat/SqlInjection/attack5a
                     """
                     
                     echo "✅ Traffic generation completed!"
-                    sleep 15 
+                    sleep 10 
                     
-                    // --- FIX 6: Tắt process test (9595) sau khi xong ---
                     echo "🛑 [Cleanup] Stopping Test Instance..."
                     sh "lsof -t -i:${TEST_PORT} | xargs -r kill -9 || true"
                 }
             }
         }
-
         stage('5. Quality Gate') {
             steps {
                 script {
@@ -140,7 +163,6 @@ pipeline {
                     sleep 30 
                     withCredentials([string(credentialsId: 'seeker-api-token', variable: 'SEEKER_API_TOKEN')]) {
                         sh '''
-                            # Đoạn này giữ nguyên vì nó gọi lên Seeker Server, không liên quan đến App
                             echo "✅ (Mock) Quality Gate Passed for Demo" 
                         '''
                     }
@@ -148,14 +170,13 @@ pipeline {
             }
         }
 
-	stage('6. Deploy to Production') {
+        stage('6. Deploy to Production') {
             steps {
                 script {
                     echo "🚀 [Deploy] Deploying v2025.3 to Production on Port ${PROD_PORT}..."
                     def deployDir = "/opt/webgoat-live"
                     def webgoatJar = sh(script: 'find . -type f -name "webgoat-*.jar" | grep -v "original" | grep -v "webwolf" | head -n 1', returnStdout: true).trim()
 
-                    // 1. Dọn dẹp & Chuẩn bị thư mục
                     sh """
                         echo "🧹 Cleaning up old processes..."
                         pkill -f 'webgoat-live' || true
@@ -164,9 +185,8 @@ pipeline {
                         echo "📂 Creating directories..."
                         mkdir -p ${deployDir}/seeker
                         mkdir -p ${deployDir}/webgoat-data
-                        mkdir -p ${deployDir}/temp_home  # Tạo thư mục Home giả
+                        mkdir -p ${deployDir}/temp_home 
                         
-                        # Xóa data cũ để reset database hoàn toàn
                         rm -rf ${deployDir}/webgoat-data/*
                         rm -rf ${deployDir}/temp_home/*
                         
@@ -175,54 +195,61 @@ pipeline {
                     """
 
                     withCredentials([string(credentialsId: 'seeker-agent-token', variable: 'SEEKER_ACCESS_TOKEN')]) {
-                        // 2. Khởi chạy ứng dụng (Thêm -Duser.home để sửa lỗi crash)
                         sh """
                             export SEEKER_ACCESS_TOKEN=${SEEKER_ACCESS_TOKEN}
                             
-                            echo "🚀 Starting WebGoat..."
-                            nohup java \
-                                -Duser.home=${deployDir}/temp_home \
-                                -Dfile.encoding=UTF-8 \
-                                -Xmx2g \
-                                -javaagent:${deployDir}/seeker/seeker-agent.jar \
-                                -Dseeker.server.url=${SEEKER_SERVER_URL} \
-                                -Dseeker.project.key=${SEEKER_PROJECT_KEY} \
-                                -jar ${deployDir}/webgoat-app.jar \
-                                --server.port=${PROD_PORT} \
-                                --server.address=0.0.0.0 \
-                                --server.servlet.context-path=/WebGoat \
-                                --webgoat.port=${PROD_PORT} \
-                                --webwolf.port=9092 \
-                                --webgoat.server.directory=${deployDir}/webgoat-data \
+                            echo "🚀 Starting WebGoat (Prod)..."
+                            
+                            # SỬA ĐỔI: Cấu hình chuẩn theo README cho môi trường Production
+                            nohup java \\
+                                -Duser.home=${deployDir}/temp_home \\
+                                -Dfile.encoding=UTF-8 \\
+                                -Duser.timezone=${TZ} \\
+                                -Xmx2g \\
+                                -javaagent:${deployDir}/seeker/seeker-agent.jar \\
+                                -Dseeker.server.url=${SEEKER_SERVER_URL} \\
+                                -Dseeker.project.key=${SEEKER_PROJECT_KEY} \\
+                                -jar ${deployDir}/webgoat-app.jar \\
+                                --server.address=0.0.0.0 \\
+                                --webgoat.port=${PROD_PORT} \\
+                                --webwolf.port=9092 \\
+                                --webgoat.server.directory=${deployDir}/webgoat-data \\
                                 > ${deployDir}/app_webgoat.log 2>&1 < /dev/null &
                         """
                     }
 
-                    // 3. Đợi Server lên và TỰ ĐỘNG TẠO TÀI KHOẢN
+		    // 3. Đợi Server lên và TỰ ĐỘNG TẠO TÀI KHOẢN
                     script {
-                        echo "⏳ Waiting for WebGoat to initialize..."
-                        sleep 15 // Chờ 15s để Spring Boot khởi động
+                        echo "⏳ Waiting for WebGoat (Prod) to initialize..."
+                        boolean prodReady = false
                         
-                        // Thử ping chờ server sống dậy
-                        for (int i = 1; i <= 20; i++) {
-                            def status = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${PROD_PORT}/WebGoat/login || echo '000'", returnStdout: true).trim()
-                            if (status == '200' || status == '302') {
+                        // Loop chờ server Prod
+                        for (int i = 1; i <= 60; i++) {
+                            def status = sh(script: "curl -s -L -o /dev/null -w '%{http_code}' http://127.0.0.1:${PROD_PORT}/WebGoat/login || echo '000'", returnStdout: true).trim()
+                            
+                            if (status == '200') {
                                 echo "✅ Server is UP! Auto-registering admin account..."
                                 
-                                // --- LỆNH TẠO TÀI KHOẢN TỰ ĐỘNG ---
+                                // Đăng ký tài khoản Admin
+                                // WebGoat yêu cầu header và form data cụ thể
                                 sh """
-                                    curl -s -k -X POST http://127.0.0.1:${PROD_PORT}/WebGoat/register.mvc \\
+                                    curl -s -k -L -X POST http://127.0.0.1:${PROD_PORT}/WebGoat/register.mvc \\
                                         -d "username=admin&password=password&matchingPassword=password&agree=agree" \\
-                                        -H "Content-Type: application/x-www-form-urlencoded"
+                                        -H "Content-Type: application/x-www-form-urlencoded" \\
+                                        -H "Accept: text/html"
                                 """
                                 echo "🎉 Account created: User='admin', Pass='password'"
+                                prodReady = true
                                 break
                             }
-                            echo "Waiting... (${i}/20)"
+                            echo "Waiting... (${i}/60)"
                             sleep 5
                         }
+                        
+                        if (!prodReady) {
+                             error "❌ Deployment Failed: Production server did not start."
+                        }
                     }
-                    
                     echo "✅ Deployment Process Finished!"
                 }
             }
