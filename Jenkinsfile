@@ -172,36 +172,35 @@ pipeline {
                 }
             }
         }
-
 	stage('6. Deploy to Production') {
             steps {
                 script {
                     echo "🚀 [Deploy] Deploying v2025.3 to Production on Port ${PROD_PORT}..."
                     def deployDir = "${WORKSPACE}/deploy_prod" 
-                    def webgoatJar = sh(script: 'find . -type f -name "webgoat-*.jar" | grep -v "original" | grep -v "webwolf" | head -n 1', returnStdout: true).trim()
+                    
+                    // --- FIX: Thêm grep -v "deploy_prod" để KHÔNG lấy nhầm file jar cũ ---
+                    def webgoatJar = sh(script: 'find . -type f -name "webgoat-*.jar" | grep -v "original" | grep -v "webwolf" | grep -v "deploy_prod" | head -n 1', returnStdout: true).trim()
+
+                    if (!webgoatJar) {
+                        error "❌ ERROR: No new WebGoat JAR file found in build folders!"
+                    }
+                    echo "📦 Found JAR: ${webgoatJar}"
 
                     // 1. Dọn dẹp & Chuẩn bị thư mục
                     sh """
                         echo "🧹 Cleaning up old processes..."
                         
-                        # --- FIX: Kill cả port WebGoat (8090) VÀ WebWolf (9092) ---
-                        echo "Killing process on port ${PROD_PORT}..."
+                        # Kill process trên port PROD (8090) và WebWolf (9092)
                         lsof -t -i:${PROD_PORT} | xargs -r kill -9 || true
-                        
-                        echo "Killing process on port 9092 (WebWolf)..."
                         lsof -t -i:9092 | xargs -r kill -9 || true
-                        
-                        # Đợi 2s để hệ điều hành giải phóng port hoàn toàn
                         sleep 2
                         
                         echo "📂 Creating directories at ${deployDir}..."
+                        # Xóa hẳn thư mục deploy cũ để đảm bảo sạch sẽ
+                        rm -rf ${deployDir}
                         mkdir -p ${deployDir}/seeker
                         mkdir -p ${deployDir}/webgoat-data
                         mkdir -p ${deployDir}/temp_home
-                        
-                        # Xóa data cũ
-                        rm -rf ${deployDir}/webgoat-data/*
-                        rm -rf ${deployDir}/temp_home/*
                         
                         echo "📋 Copying files..."
                         cp ${webgoatJar} ${deployDir}/webgoat-app.jar
