@@ -254,20 +254,22 @@ pipeline {
                             export SEEKER_ACCESS_TOKEN=${SEEKER_ACCESS_TOKEN}
                             echo "Starting WebGoat & WebWolf (Prod)..."
                             
-                            nohup java \
-                                -Dfile.encoding=UTF-8 \
-                                -Duser.timezone=${TZ} \
-                                -Xmx2g \
-                                -javaagent:${deployDir}/seeker/seeker-agent.jar \
-                                -Dseeker.server.url=${SEEKER_SERVER_URL} \
-                                -Dseeker.project.key=${SEEKER_PROJECT_KEY} \
-                                -jar ${deployDir}/webgoat-app.jar \
-                                --server.address=0.0.0.0 \
-                                --webgoat.port=${PROD_PORT} \
-                                --webwolf.port=${WOLF_PROD_PORT} \
-                                --webgoat.server.directory=${deployDir}/webgoat-data \
-                                > ${deployDir}/app_webgoat_prod.log 2>&1 < /dev/null &
-                        """
+			mkdir -p ${deployDir}/webwolf-data
+    
+    nohup java -Xmx2g \
+        -Dfile.encoding=UTF-8 -Duser.timezone=${TZ} \
+        -javaagent:${deployDir}/seeker/seeker-agent.jar \
+        -Dseeker.server.url=${SEEKER_SERVER_URL} \
+        -Dseeker.project.key=${SEEKER_PROJECT_KEY} \
+        -jar ${deployDir}/webgoat-app.jar \
+        --server.address=0.0.0.0 \
+        --webgoat.port=${PROD_PORT} \
+        --webwolf.port=${WOLF_PROD_PORT} \
+        --webwolf.address=0.0.0.0 \
+        --webgoat.server.directory=${deployDir}/webgoat-data \
+        --webwolf.server.directory=${deployDir}/webwolf-data \ // THÊM DÒNG NÀY
+        > ${deployDir}/app_webgoat_prod.log 2>&1 < /dev/null &
+"""
                     }
                     // 3. Đợi Server lên và TỰ ĐỘNG TẠO TÀI KHOẢN
                     script {
