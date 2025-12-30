@@ -173,37 +173,42 @@ pipeline {
             }
         }
 
-        stage('6. Deploy to Production') {
+	stage('6. Deploy to Production') {
             steps {
                 script {
                     echo "🚀 [Deploy] Deploying v2025.3 to Production on Port ${PROD_PORT}..."
-                    def deployDir = "/opt/webgoat-live"
+                    // Sử dụng WORKSPACE/deploy thay vì /opt để tránh lỗi 'Permission Denied' nếu Jenkins không có quyền root
+                    def deployDir = "${WORKSPACE}/deploy_prod" 
                     def webgoatJar = sh(script: 'find . -type f -name "webgoat-*.jar" | grep -v "original" | grep -v "webwolf" | head -n 1', returnStdout: true).trim()
 
+                    // 1. Dọn dẹp & Chuẩn bị thư mục
                     sh """
                         echo "🧹 Cleaning up old processes..."
-                        pkill -f 'webgoat-live' || true
+                        # Kill process cũ đang chạy trên port PROD
                         lsof -t -i:${PROD_PORT} | xargs -r kill -9 || true
                         
-                        echo "📂 Creating directories..."
+                        echo "📂 Creating directories at ${deployDir}..."
                         mkdir -p ${deployDir}/seeker
                         mkdir -p ${deployDir}/webgoat-data
-                        mkdir -p ${deployDir}/temp_home 
+                        mkdir -p ${deployDir}/temp_home
                         
+                        # Xóa data cũ
                         rm -rf ${deployDir}/webgoat-data/*
                         rm -rf ${deployDir}/temp_home/*
                         
+                        echo "📋 Copying files..."
                         cp ${webgoatJar} ${deployDir}/webgoat-app.jar
                         cp -r seeker/* ${deployDir}/seeker/
                     """
 
                     withCredentials([string(credentialsId: 'seeker-agent-token', variable: 'SEEKER_ACCESS_TOKEN')]) {
+                        // 2. Khởi chạy ứng dụng
                         sh """
                             export SEEKER_ACCESS_TOKEN=${SEEKER_ACCESS_TOKEN}
                             
                             echo "🚀 Starting WebGoat (Prod)..."
                             
-                            # SỬA ĐỔI: Cấu hình chuẩn theo README cho môi trường Production
+                            # Log sẽ được ghi vào file app_webgoat_prod.log để debug
                             nohup java \\
                                 -Duser.home=${deployDir}/temp_home \\
                                 -Dfile.encoding=UTF-8 \\
@@ -217,23 +222,23 @@ pipeline {
                                 --webgoat.port=${PROD_PORT} \\
                                 --webwolf.port=9092 \\
                                 --webgoat.server.directory=${deployDir}/webgoat-data \\
-                                > ${deployDir}/app_webgoat.log 2>&1 < /dev/null &
+                                > ${deployDir}/app_webgoat_prod.log 2>&1 < /dev/null &
                         """
                     }
 
-		    // 3. Đợi Server lên và TỰ ĐỘNG TẠO TÀI KHOẢN
+                    // 3. Đợi Server lên và TỰ ĐỘNG TẠO TÀI KHOẢN
                     script {
                         echo "⏳ Waiting for WebGoat (Prod) to initialize..."
                         boolean prodReady = false
                         
-                        // Loop chờ server Prod
                         for (int i = 1; i <= 60; i++) {
+                            // Check health
                             def status = sh(script: "curl -s -L -o /dev/null -w '%{http_code}' http://127.0.0.1:${PROD_PORT}/WebGoat/login || echo '000'", returnStdout: true).trim()
                             
                             if (status == '200') {
                                 echo "✅ Server is UP! Auto-registering admin account..."
                                 
-                                // --- FIX: Đổi user thành 'webgoat_admin' ---
+                                // Đăng ký tài khoản (đã bỏ -L và dùng user hợp lệ)
                                 sh """
                                     curl -s -k -X POST http://127.0.0.1:${PROD_PORT}/WebGoat/register.mvc \\
                                         -d "username=webgoatadmin&password=password&matchingPassword=password&agree=agree" \\
@@ -243,14 +248,16 @@ pipeline {
                                 echo "🎉 Account created: User='webgoatadmin', Pass='password'"
                                 prodReady = true
                                 break
-                            
                             }
                             echo "Waiting... (${i}/60)"
                             sleep 5
                         }
                         
+                        // --- QUAN TRỌNG: In log ra màn hình nếu thất bại ---
                         if (!prodReady) {
-                             error "❌ Deployment Failed: Production server did not start."
+                             echo "🔴 Deployment FAILED. Printing application logs:"
+                             sh "cat ${deployDir}/app_webgoat_prod.log || echo 'Log file not found!'"
+                             error "❌ Deployment Failed: Production server did not start on port ${PROD_PORT}."
                         }
                     }
                     echo "✅ Deployment Process Finished!"
