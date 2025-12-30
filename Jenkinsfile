@@ -177,15 +177,22 @@ pipeline {
             steps {
                 script {
                     echo "🚀 [Deploy] Deploying v2025.3 to Production on Port ${PROD_PORT}..."
-                    // Sử dụng WORKSPACE/deploy thay vì /opt để tránh lỗi 'Permission Denied' nếu Jenkins không có quyền root
                     def deployDir = "${WORKSPACE}/deploy_prod" 
                     def webgoatJar = sh(script: 'find . -type f -name "webgoat-*.jar" | grep -v "original" | grep -v "webwolf" | head -n 1', returnStdout: true).trim()
 
                     // 1. Dọn dẹp & Chuẩn bị thư mục
                     sh """
                         echo "🧹 Cleaning up old processes..."
-                        # Kill process cũ đang chạy trên port PROD
+                        
+                        # --- FIX: Kill cả port WebGoat (8090) VÀ WebWolf (9092) ---
+                        echo "Killing process on port ${PROD_PORT}..."
                         lsof -t -i:${PROD_PORT} | xargs -r kill -9 || true
+                        
+                        echo "Killing process on port 9092 (WebWolf)..."
+                        lsof -t -i:9092 | xargs -r kill -9 || true
+                        
+                        # Đợi 2s để hệ điều hành giải phóng port hoàn toàn
+                        sleep 2
                         
                         echo "📂 Creating directories at ${deployDir}..."
                         mkdir -p ${deployDir}/seeker
@@ -208,7 +215,6 @@ pipeline {
                             
                             echo "🚀 Starting WebGoat (Prod)..."
                             
-                            # Log sẽ được ghi vào file app_webgoat_prod.log để debug
                             nohup java \\
                                 -Duser.home=${deployDir}/temp_home \\
                                 -Dfile.encoding=UTF-8 \\
@@ -232,13 +238,11 @@ pipeline {
                         boolean prodReady = false
                         
                         for (int i = 1; i <= 60; i++) {
-                            // Check health
-                            def status = sh(script: "curl -s -L -o /dev/null -w '%{http_code}' http://127.0.0.1:${PROD_PORT}/WebGoat/login || echo '000'", returnStdout: true).trim()
+                            def status = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${PROD_PORT}/WebGoat/login || echo '000'", returnStdout: true).trim()
                             
                             if (status == '200') {
                                 echo "✅ Server is UP! Auto-registering admin account..."
                                 
-                                // Đăng ký tài khoản (đã bỏ -L và dùng user hợp lệ)
                                 sh """
                                     curl -s -k -X POST http://127.0.0.1:${PROD_PORT}/WebGoat/register.mvc \\
                                         -d "username=webgoatadmin&password=password&matchingPassword=password&agree=agree" \\
@@ -253,7 +257,6 @@ pipeline {
                             sleep 5
                         }
                         
-                        // --- QUAN TRỌNG: In log ra màn hình nếu thất bại ---
                         if (!prodReady) {
                              echo "🔴 Deployment FAILED. Printing application logs:"
                              sh "cat ${deployDir}/app_webgoat_prod.log || echo 'Log file not found!'"
