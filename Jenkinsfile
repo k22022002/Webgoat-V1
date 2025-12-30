@@ -25,7 +25,8 @@ pipeline {
         stage('1. Build Application') {
             steps {
                 script {
-                    echo "🚀 [Build] Compiling WebGoat v2023.8..."
+                    echo "🚀 [Build] Compiling WebGoat v2023..."
+                    // Skip tests để build nhanh hơn
                     sh "mvn clean install -DskipTests"
                 }
             }
@@ -65,24 +66,27 @@ pipeline {
                 script {
                     echo "🚀 [Run] Starting WebGoat + Seeker (Test Mode)..."
 
-		    // Tìm file JAR, ưu tiên webgoat-server và loại trừ webwolf
-// Bước 1: Thử tìm chính xác file có tên webgoat-server
-def webgoatJar = sh(script: 'find . -name "webgoat-server*.jar" | grep -v "original" | head -n 1', returnStdout: true).trim()
+                    // --- LOGIC TÌM FILE JAR (FIXED) ---
+                    // 1. Ưu tiên tìm file trong module webgoat-server (đây là app chính)
+                    // 2. Loại bỏ các file 'original' (file chưa repackage) và file 'webwolf'
+                    def webgoatJar = sh(script: 'find . -type f -name "webgoat-server*.jar" | grep -v "original" | grep -v "webwolf" | head -n 1', returnStdout: true).trim()
 
-// Bước 2: Nếu không thấy, tìm file jar lớn nhưng BẮT BUỘC loại trừ webwolf
-if (!webgoatJar) {
-    echo "⚠️ Không tìm thấy webgoat-server*.jar cụ thể, đang tìm file JAR > 50MB (loại trừ webwolf)..."
-    webgoatJar = sh(script: 'find . -name "*.jar" -size +50M | grep -v "original" | grep -v "webwolf" | grep -v "agent" | head -n 1', returnStdout: true).trim()
-}
+                    // Fallback: Nếu không thấy webgoat-server, tìm file webgoat*.jar chung chung nhưng vẫn loại trừ webwolf
+                    if (!webgoatJar) {
+                        echo "⚠️ Không tìm thấy webgoat-server*.jar chuẩn, thử tìm file JAR khác..."
+                        webgoatJar = sh(script: 'find . -type f -name "webgoat*.jar" | grep -v "original" | grep -v "webwolf" | grep -v "agent" | head -n 1', returnStdout: true).trim()
+                    }
 
-// Kiểm tra cuối cùng
-if (!webgoatJar) {
-    error "❌ ERROR: Không tìm thấy file JAR WebGoat nào hợp lệ!"
-} else if (webgoatJar.contains("webwolf")) {
-    error "❌ ERROR: Script đang chọn nhầm file WebWolf: ${webgoatJar}"
-}
+                    // Validate
+                    if (!webgoatJar) {
+                        error "❌ ERROR: Không tìm thấy file JAR WebGoat nào! Kiểm tra lại quá trình Build."
+                    }
+                    if (webgoatJar.contains("webwolf")) {
+                        error "❌ ERROR: Script vẫn đang chọn nhầm file WebWolf: ${webgoatJar}"
+                    }
 
-echo ">>> ✅ Selected JAR: ${webgoatJar}"
+                    echo ">>> ✅ Selected JAR for Testing: ${webgoatJar}"
+
                     // 2. Cleanup Port cũ
                     sh """
                         pkill -f webgoat || true
@@ -103,10 +107,11 @@ echo ">>> ✅ Selected JAR: ${webgoatJar}"
                                 -Dseeker.server.url=${SEEKER_SERVER_URL} \\
                                 -Dseeker.project.key=${SEEKER_PROJECT_KEY} \\
                                 -Dseeker.agent.auto.update=false \\
+                                -Dwebgoat.port=${APP_PORT} \\
+                                -Dwebwolf.port=9091 \\
                                 -jar ${webgoatJar} \\
                                 --server.port=${APP_PORT} \\
                                 --server.address=0.0.0.0 \\
-                                --server.servlet.context-path=/WebGoat \\
                                 > app_webgoat.log 2>&1 &
                         """
                     }
@@ -123,7 +128,7 @@ echo ">>> ✅ Selected JAR: ${webgoatJar}"
                 script {
                     echo "💓 [Check] Waiting for WebGoat to be alive..."
                     boolean isReady = false
-                    // Tăng thời gian chờ lên vì WebGoat khởi động khá lâu
+                    // WebGoat 2023 khởi động khá chậm, chờ tối đa 300s
                     for (int i = 1; i <= 30; i++) { 
                         def status = sh(
                             script: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${APP_PORT}/WebGoat/login || echo '000'", 
@@ -131,6 +136,7 @@ echo ">>> ✅ Selected JAR: ${webgoatJar}"
                         ).trim()
                         
                         echo ">>> [Attempt ${i}/30] Status: ${status}"
+                        // WebGoat thường redirect (302) về login hoặc trả về 200
                         if (status == '200' || status == '302') {
                             isReady = true; break;
                         }
@@ -212,7 +218,7 @@ echo ">>> ✅ Selected JAR: ${webgoatJar}"
         }
 
         // =========================================
-        // STAGE 6: DEPLOY TO PRODUCTION (FIXED)
+        // STAGE 6: DEPLOY TO PRODUCTION
         // =========================================
         stage('6. Deploy to Production') {
             steps {
@@ -222,26 +228,21 @@ echo ">>> ✅ Selected JAR: ${webgoatJar}"
                     def deployDir = "/opt/webgoat-live" 
                     def deployLog = "${deployDir}/app.log"
 
-		    // Thay thế đoạn tìm file cũ bằng đoạn này:
+                    // --- LOGIC TÌM FILE JAR (FIXED - Same as Stage 3) ---
+                    def webgoatJar = sh(script: 'find . -type f -name "webgoat-server*.jar" | grep -v "original" | grep -v "webwolf" | head -n 1', returnStdout: true).trim()
 
-// Tìm file JAR, ưu tiên webgoat-server và loại trừ webwolf
-// Bước 1: Thử tìm chính xác file có tên webgoat-server
-def webgoatJar = sh(script: 'find . -name "webgoat-server*.jar" | grep -v "original" | head -n 1', returnStdout: true).trim()
+                    if (!webgoatJar) {
+                        webgoatJar = sh(script: 'find . -type f -name "webgoat*.jar" | grep -v "original" | grep -v "webwolf" | grep -v "agent" | head -n 1', returnStdout: true).trim()
+                    }
 
-// Bước 2: Nếu không thấy, tìm file jar lớn nhưng BẮT BUỘC loại trừ webwolf
-if (!webgoatJar) {
-    echo "⚠️ Không tìm thấy webgoat-server*.jar cụ thể, đang tìm file JAR > 50MB (loại trừ webwolf)..."
-    webgoatJar = sh(script: 'find . -name "*.jar" -size +50M | grep -v "original" | grep -v "webwolf" | grep -v "agent" | head -n 1', returnStdout: true).trim()
-}
+                    if (!webgoatJar) {
+                        error "❌ ERROR: Không tìm thấy file JAR WebGoat để deploy!"
+                    } else if (webgoatJar.contains("webwolf")) {
+                        error "❌ ERROR: Đang chọn nhầm file WebWolf: ${webgoatJar}"
+                    }
 
-// Kiểm tra cuối cùng
-if (!webgoatJar) {
-    error "❌ ERROR: Không tìm thấy file JAR WebGoat nào hợp lệ!"
-} else if (webgoatJar.contains("webwolf")) {
-    error "❌ ERROR: Script đang chọn nhầm file WebWolf: ${webgoatJar}"
-}
+                    echo ">>> ✅ Selected JAR for Production: ${webgoatJar}"
 
-echo ">>> ✅ Selected JAR: ${webgoatJar}"
                     // 2. Dọn dẹp process cũ
                     sh "pkill -f webgoat || true"
                     sh "lsof -t -i:${APP_PORT} | xargs -r kill -9 || true"
@@ -249,7 +250,7 @@ echo ">>> ✅ Selected JAR: ${webgoatJar}"
 
                     // 3. Chuẩn bị thư mục & Copy file
                     sh "mkdir -p ${deployDir}/seeker"
-                    // COPY CHÍNH XÁC FILE TÌM ĐƯỢC
+                    // Copy đúng file đã tìm được và đổi tên thành webgoat-app.jar để dễ quản lý
                     sh "cp ${webgoatJar} ${deployDir}/webgoat-app.jar"
                     sh "cp -r seeker/* ${deployDir}/seeker/"
 
@@ -267,10 +268,11 @@ echo ">>> ✅ Selected JAR: ${webgoatJar}"
                                 -javaagent:${deployDir}/seeker/seeker-agent.jar \\
                                 -Dseeker.server.url=${SEEKER_SERVER_URL} \\
                                 -Dseeker.project.key=${SEEKER_PROJECT_KEY} \\
+                                -Dwebgoat.port=${APP_PORT} \\
+                                -Dwebwolf.port=9091 \\
                                 -jar webgoat-app.jar \\
                                 --server.port=${APP_PORT} \\
                                 --server.address=0.0.0.0 \\
-                                --server.servlet.context-path=/WebGoat \\
                                 > ${deployLog} 2>&1 &
                         """
                     }
