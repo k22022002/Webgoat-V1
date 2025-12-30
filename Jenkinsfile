@@ -58,8 +58,9 @@ pipeline {
                     """
 
                     withCredentials([string(credentialsId: 'seeker-agent-token', variable: 'SEEKER_ACCESS_TOKEN')]) {
-                        sh """
+		    sh """
                             export SEEKER_ACCESS_TOKEN=${SEEKER_ACCESS_TOKEN}
+                            
                             nohup java \\
                                 -Dfile.encoding=UTF-8 \\
                                 --add-opens java.base/java.lang=ALL-UNNAMED \\
@@ -69,11 +70,12 @@ pipeline {
                                 -javaagent:${WORKSPACE}/seeker/seeker-agent.jar \\
                                 -Dseeker.server.url=${SEEKER_SERVER_URL} \\
                                 -Dseeker.project.key=${SEEKER_PROJECT_KEY} \\
-                                -Dwebgoat.port=${APP_PORT} \\
-                                -Dwebwolf.port=9091 \\
                                 -jar ${webgoatJar} \\
                                 --server.port=${APP_PORT} \\
                                 --server.address=0.0.0.0 \\
+                                --server.servlet.context-path=/WebGoat \\ 
+                                --webgoat.port=${APP_PORT} \\
+                                --webwolf.port=9091 \\
                                 > app_webgoat.log 2>&1 &
                         """
                     }
@@ -87,7 +89,7 @@ pipeline {
             steps {
                 script {
                     echo "💓 [Check] Waiting for WebGoat to be alive..."
-                    boolean isReady = false
+                    boolean	 isReady = false
                     // WebGoat 2023 khởi động khá chậm, chờ tối đa 300s
                     for (int i = 1; i <= 30; i++) { 
                         def status = sh(
@@ -97,7 +99,7 @@ pipeline {
                         
                         echo ">>> [Attempt ${i}/30] Status: ${status}"
                         // WebGoat thường redirect (302) về login hoặc trả về 200
-                        if (status == '200' || status == '302') {
+                        if (status == '200' || status == '302'|| status == '401' ) {
                             isReady = true; break;
                         }
                         sleep 10
@@ -190,24 +192,26 @@ pipeline {
                     sh "cp -r seeker/* ${deployDir}/seeker/"
 
                     withCredentials([string(credentialsId: 'seeker-agent-token', variable: 'SEEKER_ACCESS_TOKEN')]) {
-                        sh """
+		    sh """
                             export SEEKER_ACCESS_TOKEN=${SEEKER_ACCESS_TOKEN}
-                            cd ${deployDir}
+                            
+                            # (Lệnh này dùng cho cả Stage 3 và Stage 6)
                             nohup java \\
                                 -Dfile.encoding=UTF-8 \\
                                 --add-opens java.base/java.lang=ALL-UNNAMED \\
                                 --add-opens java.base/java.util=ALL-UNNAMED \\
                                 --add-opens java.base/sun.nio.ch=ALL-UNNAMED \\
                                 -Xmx2g \\
-                                -javaagent:${deployDir}/seeker/seeker-agent.jar \\
+                                -javaagent:${WORKSPACE}/seeker/seeker-agent.jar \\
                                 -Dseeker.server.url=${SEEKER_SERVER_URL} \\
                                 -Dseeker.project.key=${SEEKER_PROJECT_KEY} \\
-                                -Dwebgoat.port=${APP_PORT} \\
-                                -Dwebwolf.port=9091 \\
-                                -jar webgoat-app.jar \\
+                                -jar ${webgoatJar} \\
                                 --server.port=${APP_PORT} \\
                                 --server.address=0.0.0.0 \\
-                                > app.log 2>&1 &
+                                --server.servlet.context-path=/WebGoat \\ 
+                                --webgoat.port=${APP_PORT} \\
+                                --webwolf.port=9091 \\
+                                > app_webgoat.log 2>&1 &
                         """
                     }
                     echo "✅ Deployed v2025.3 Successfully!"
