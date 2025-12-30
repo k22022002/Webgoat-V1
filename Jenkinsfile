@@ -103,14 +103,14 @@ pipeline {
                     echo "💓 [Check] Waiting for WebGoat (Test Instance)..."
                     boolean isReady = false
                 
-                    // Giữ nguyên logic check health
+                    // Check health loop
                     for (int i = 1; i <= 60; i++) { 
                         def status = sh(
                             script: "curl -s -L -o /dev/null -w '%{http_code}' http://127.0.0.1:${TEST_PORT}/WebGoat/login || echo '000'", 
                             returnStdout: true
                         ).trim()
                     
-                        echo ">>> [Attempt ${i}/60] Status: ${status}"
+                        // Chấp nhận 200 hoặc 401 (App đã lên)
                         if (status == '200' || status == '401') {
                             isReady = true;
                             echo "✅ WebGoat is UP!"
@@ -126,23 +126,24 @@ pipeline {
 
                     echo "🚦 [Traffic] Generating traffic for Seeker..."
                     
-                    // --- FIX: Thêm bước Đăng ký trước khi Login ---
                     sh """
                         rm -f cookies.txt
                         
-                        # 1. ĐĂNG KÝ TÀI KHOẢN (Bước này còn thiếu gây lỗi 47)
-                        echo "--- Registering Admin Account ---"
+                        # --- FIX: Đổi user thành 'webgoat_admin' (đủ 6 ký tự) ---
+                        
+                        # 1. ĐĂNG KÝ
+                        echo "--- Registering Account ---"
                         curl -s -k -L -X POST http://127.0.0.1:${TEST_PORT}/WebGoat/register.mvc \\
-                             -d "username=admin&password=password&matchingPassword=password&agree=agree" \\
+                             -d "username=webgoat_admin&password=password&matchingPassword=password&agree=agree" \\
                              -H "Content-Type: application/x-www-form-urlencoded"
 
-                        # 2. Login (Giờ mới thành công được)
+                        # 2. LOGIN
                         echo "--- Logging in ---"
                         curl -s -k -c cookies.txt -L -X POST http://127.0.0.1:${TEST_PORT}/WebGoat/login \\
-                             -d "username=admin&password=password" \\
+                             -d "username=webgoat_admin&password=password" \\
                              -H "Content-Type: application/x-www-form-urlencoded"
 
-                        # 3. Tạo Traffic
+                        # 3. TẠO TRAFFIC
                         echo "--- Accessing Welcome Page ---"
                         curl -s -k -b cookies.txt -o /dev/null http://127.0.0.1:${TEST_PORT}/WebGoat/welcome.mvc
                         
@@ -229,20 +230,22 @@ pipeline {
                         for (int i = 1; i <= 60; i++) {
                             def status = sh(script: "curl -s -L -o /dev/null -w '%{http_code}' http://127.0.0.1:${PROD_PORT}/WebGoat/login || echo '000'", returnStdout: true).trim()
                             
+			    // ... (Phần code check loop status giữ nguyên) ...
                             if (status == '200') {
                                 echo "✅ Server is UP! Auto-registering admin account..."
                                 
-                                // Đăng ký tài khoản Admin
-                                // WebGoat yêu cầu header và form data cụ thể
+                                // --- FIX: Đổi user thành 'webgoat_admin' ---
                                 sh """
                                     curl -s -k -L -X POST http://127.0.0.1:${PROD_PORT}/WebGoat/register.mvc \\
-                                        -d "username=admin&password=password&matchingPassword=password&agree=agree" \\
+                                        -d "username=webgoat_admin&password=password&matchingPassword=password&agree=agree" \\
                                         -H "Content-Type: application/x-www-form-urlencoded" \\
                                         -H "Accept: text/html"
                                 """
-                                echo "🎉 Account created: User='admin', Pass='password'"
+                                echo "🎉 Account created: User='webgoat_admin', Pass='password'"
                                 prodReady = true
                                 break
+                            }
+                    // ... (Phần còn lại giữ nguyên) ...
                             }
                             echo "Waiting... (${i}/60)"
                             sleep 5
