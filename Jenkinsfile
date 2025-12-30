@@ -134,13 +134,13 @@ pipeline {
                         # 1. ĐĂNG KÝ
                         echo "--- Registering Account ---"
                         curl -s -k -L -X POST http://127.0.0.1:${TEST_PORT}/WebGoat/register.mvc \\
-                             -d "username=webgoat_admin&password=password&matchingPassword=password&agree=agree" \\
+                             -d "username=webgoatadmin&password=password&matchingPassword=password&agree=agree" \\
                              -H "Content-Type: application/x-www-form-urlencoded"
 
                         # 2. LOGIN
                         echo "--- Logging in ---"
                         curl -s -k -c cookies.txt -L -X POST http://127.0.0.1:${TEST_PORT}/WebGoat/login \\
-                             -d "username=webgoat_admin&password=password" \\
+                             -d "username=webgoatadmin&password=password" \\
                              -H "Content-Type: application/x-www-form-urlencoded"
 
                         # 3. TẠO TRAFFIC
@@ -236,11 +236,11 @@ pipeline {
                                 // --- FIX: Đổi user thành 'webgoat_admin' ---
                                 sh """
                                     curl -s -k -L -X POST http://127.0.0.1:${PROD_PORT}/WebGoat/register.mvc \\
-                                        -d "username=webgoat_admin&password=password&matchingPassword=password&agree=agree" \\
+                                        -d "username=webgoatadmin&password=password&matchingPassword=password&agree=agree" \\
                                         -H "Content-Type: application/x-www-form-urlencoded" \\
                                         -H "Accept: text/html"
                                 """
-                                echo "🎉 Account created: User='webgoat_admin', Pass='password'"
+                                echo "🎉 Account created: User='webgoatadmin', Pass='password'"
                                 prodReady = true
                                 break
                             
