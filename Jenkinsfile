@@ -103,21 +103,17 @@ pipeline {
                     echo "💓 [Check] Waiting for WebGoat (Test Instance)..."
                     boolean isReady = false
                 
-                    // Tăng số lần thử lên 60 lần x 5s = 5 phút tối đa (An toàn cho Java 25 start-up)
+                    // Giữ nguyên logic check health
                     for (int i = 1; i <= 60; i++) { 
-                        // Sử dụng curl -L để follow redirect. WebGoat sẽ redirect / -> /login
-                        // Chúng ta mong đợi code 200 khi đã load được trang Login thành công
                         def status = sh(
                             script: "curl -s -L -o /dev/null -w '%{http_code}' http://127.0.0.1:${TEST_PORT}/WebGoat/login || echo '000'", 
                             returnStdout: true
                         ).trim()
                     
                         echo ">>> [Attempt ${i}/60] Status: ${status}"
-                        
-                        // Chấp nhận 200 (Load OK) hoặc 401 (Unauthorized - tức là app đã chạy và chặn truy cập)
                         if (status == '200' || status == '401') {
                             isReady = true;
-                            echo "✅ WebGoat is UP and Ready!"
+                            echo "✅ WebGoat is UP!"
                             break;
                         }
                         sleep 5
@@ -130,20 +126,26 @@ pipeline {
 
                     echo "🚦 [Traffic] Generating traffic for Seeker..."
                     
-                    // Bắn traffic với cookie jar để giả lập session
+                    // --- FIX: Thêm bước Đăng ký trước khi Login ---
                     sh """
                         rm -f cookies.txt
-                        # 1. Login để lấy Session Cookie
+                        
+                        # 1. ĐĂNG KÝ TÀI KHOẢN (Bước này còn thiếu gây lỗi 47)
+                        echo "--- Registering Admin Account ---"
+                        curl -s -k -L -X POST http://127.0.0.1:${TEST_PORT}/WebGoat/register.mvc \\
+                             -d "username=admin&password=password&matchingPassword=password&agree=agree" \\
+                             -H "Content-Type: application/x-www-form-urlencoded"
+
+                        # 2. Login (Giờ mới thành công được)
                         echo "--- Logging in ---"
                         curl -s -k -c cookies.txt -L -X POST http://127.0.0.1:${TEST_PORT}/WebGoat/login \\
                              -d "username=admin&password=password" \\
                              -H "Content-Type: application/x-www-form-urlencoded"
 
-                        # 2. Truy cập trang Welcome (Authenticated)
+                        # 3. Tạo Traffic
                         echo "--- Accessing Welcome Page ---"
                         curl -s -k -b cookies.txt -o /dev/null http://127.0.0.1:${TEST_PORT}/WebGoat/welcome.mvc
                         
-                        # 3. Trigger một lỗ hổng giả lập (SQL Injection lesson)
                         echo "--- Triggering SQL Injection Lesson ---"
                         curl -s -k -b cookies.txt -o /dev/null http://127.0.0.1:${TEST_PORT}/WebGoat/SqlInjection/attack5a
                     """
