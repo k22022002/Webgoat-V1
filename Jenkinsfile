@@ -230,7 +230,6 @@ pipeline {
                         for (int i = 1; i <= 60; i++) {
                             def status = sh(script: "curl -s -L -o /dev/null -w '%{http_code}' http://127.0.0.1:${PROD_PORT}/WebGoat/login || echo '000'", returnStdout: true).trim()
                             
-			    // ... (Phần code check loop status giữ nguyên) ...
                             if (status == '200') {
                                 echo "✅ Server is UP! Auto-registering admin account..."
                                 
@@ -244,8 +243,7 @@ pipeline {
                                 echo "🎉 Account created: User='webgoat_admin', Pass='password'"
                                 prodReady = true
                                 break
-                            }
-                    // ... (Phần còn lại giữ nguyên) ...
+                            
                             }
                             echo "Waiting... (${i}/60)"
                             sleep 5
