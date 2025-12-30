@@ -7,8 +7,10 @@ pipeline {
     }
 
     environment {
-        TEST_PORT = "9595" 
+        TEST_PORT = "9595"
+	WOLF_TEST_PORT = "9096" 
         PROD_PORT = "8090"
+	WOLF_PROD_PORT = "9092"
         
         SEEKER_SERVER_URL  = "http://192.168.12.190:8082"
         SEEKER_PROJECT_KEY = "webgoat-2025-demo"
@@ -56,38 +58,34 @@ pipeline {
                     def webgoatJar = sh(script: 'find . -type f -name "webgoat-*.jar" | grep -v "original" | grep -v "webwolf" | head -n 1', returnStdout: true).trim()
                     if (!webgoatJar) error "❌ ERROR: No JAR file found!"
                     
-                    sh """
-                        echo ">>> Cleaning up port ${TEST_PORT}..."
+		    sh """
+                        echo ">>> Cleaning up ports ${TEST_PORT} and ${WOLF_TEST_PORT}..."
                         fuser -k ${TEST_PORT}/tcp || true
-                        lsof -t -i:${TEST_PORT} | xargs -r kill -9 || true
+                        fuser -k ${WOLF_TEST_PORT}/tcp || true
                         sleep 5
                     """
 
                     withCredentials([string(credentialsId: 'seeker-agent-token', variable: 'SEEKER_ACCESS_TOKEN')]) {
                         sh """
                             export SEEKER_ACCESS_TOKEN=${SEEKER_ACCESS_TOKEN}
-                            
-                            nohup java \\
-                                -Dfile.encoding=UTF-8 \\
-                                -Duser.timezone=${TZ} \\
-                                --add-opens java.base/java.lang=ALL-UNNAMED \\
-                                --add-opens java.base/java.util=ALL-UNNAMED \\
-                                --add-opens java.base/sun.nio.ch=ALL-UNNAMED \\
-                                -Xmx2g \\
-                                -javaagent:${WORKSPACE}/seeker/seeker-agent.jar \\
-                                -Dseeker.server.url=${SEEKER_SERVER_URL} \\
-                                -Dseeker.project.key=${SEEKER_PROJECT_KEY} \\
-                                -jar ${webgoatJar} \\
-                                --server.address=0.0.0.0 \\
-                                --webgoat.port=${TEST_PORT} \\
-                                --webwolf.port=9096 \\
+                            nohup java \
+                                -Dfile.encoding=UTF-8 \
+                                -Duser.timezone=${TZ} \
+                                --add-opens java.base/java.lang=ALL-UNNAMED \
+                                -Xmx2g \
+                                -javaagent:${WORKSPACE}/seeker/seeker-agent.jar \
+                                -Dseeker.server.url=${SEEKER_SERVER_URL} \
+                                -Dseeker.project.key=${SEEKER_PROJECT_KEY} \
+                                -jar ${webgoatJar} \
+                                --server.address=0.0.0.0 \
+                                --webgoat.port=${TEST_PORT} \
+                                --webwolf.port=${WOLF_TEST_PORT} \
                                 > app_webgoat_test.log 2>&1 < /dev/null &
                         """
                     }
                 }
             }
         }
-
 	stage('4. Health Check & Traffic') {
             steps {
                 script {
@@ -241,28 +239,20 @@ pipeline {
                     echo "Found JAR: ${webgoatJar}"
 
                     // 1. Dọn dẹp & Chuẩn bị thư mục
-                    sh """
-                        echo "Cleaning up old processes..."
-                        lsof -t -i:${PROD_PORT} | xargs -r kill -9 || true
-                        lsof -t -i:9092 | xargs -r kill -9 || true
+		    sh """
+                        echo "Cleaning up old processes on ${PROD_PORT} and ${WOLF_PROD_PORT}..."
+                        fuser -k ${PROD_PORT}/tcp || true
+                        fuser -k ${WOLF_PROD_PORT}/tcp || true
                         sleep 2
                         
-                        echo "📂 Creating directories at ${deployDir}..."
-                        rm -rf ${deployDir}
-                        mkdir -p ${deployDir}/seeker
-                        mkdir -p ${deployDir}/webgoat-data
-                        
-                        echo "Copying files..."
                         cp ${webgoatJar} ${deployDir}/webgoat-app.jar
                         cp -r seeker/* ${deployDir}/seeker/
                     """
 
                     withCredentials([string(credentialsId: 'seeker-agent-token', variable: 'SEEKER_ACCESS_TOKEN')]) {
-                        // 2. Khởi chạy ứng dụng
                         sh """
                             export SEEKER_ACCESS_TOKEN=${SEEKER_ACCESS_TOKEN}
-                            
-                            echo "Starting WebGoat (Prod)..."
+                            echo "Starting WebGoat & WebWolf (Prod)..."
                             
                             nohup java \
                                 -Dfile.encoding=UTF-8 \
@@ -274,12 +264,11 @@ pipeline {
                                 -jar ${deployDir}/webgoat-app.jar \
                                 --server.address=0.0.0.0 \
                                 --webgoat.port=${PROD_PORT} \
-                                --webwolf.port=9092 \
+                                --webwolf.port=${WOLF_PROD_PORT} \
                                 --webgoat.server.directory=${deployDir}/webgoat-data \
                                 > ${deployDir}/app_webgoat_prod.log 2>&1 < /dev/null &
                         """
                     }
-
                     // 3. Đợi Server lên và TỰ ĐỘNG TẠO TÀI KHOẢN
                     script {
                         echo "Waiting for WebGoat (Prod) to initialize..."
