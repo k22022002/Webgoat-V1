@@ -133,13 +133,13 @@ pipeline {
                         
                         # 1. ĐĂNG KÝ
                         echo "--- Registering Account ---"
-                        curl -s -k -L -X POST http://127.0.0.1:${TEST_PORT}/WebGoat/register.mvc \\
+                        curl -s -k -X POST http://127.0.0.1:${TEST_PORT}/WebGoat/register.mvc \\
                              -d "username=webgoatadmin&password=password&matchingPassword=password&agree=agree" \\
                              -H "Content-Type: application/x-www-form-urlencoded"
 
                         # 2. LOGIN
                         echo "--- Logging in ---"
-                        curl -s -k -c cookies.txt -L -X POST http://127.0.0.1:${TEST_PORT}/WebGoat/login \\
+                        curl -s -k -c cookies.txt  -X POST http://127.0.0.1:${TEST_PORT}/WebGoat/login \\
                              -d "username=webgoatadmin&password=password" \\
                              -H "Content-Type: application/x-www-form-urlencoded"
 
@@ -235,7 +235,7 @@ pipeline {
                                 
                                 // --- FIX: Đổi user thành 'webgoat_admin' ---
                                 sh """
-                                    curl -s -k -L -X POST http://127.0.0.1:${PROD_PORT}/WebGoat/register.mvc \\
+                                    curl -s -k -X POST http://127.0.0.1:${PROD_PORT}/WebGoat/register.mvc \\
                                         -d "username=webgoatadmin&password=password&matchingPassword=password&agree=agree" \\
                                         -H "Content-Type: application/x-www-form-urlencoded" \\
                                         -H "Accept: text/html"
