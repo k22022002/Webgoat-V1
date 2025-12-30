@@ -267,7 +267,7 @@ pipeline {
         --webwolf.port=${WOLF_PROD_PORT} \
         --webwolf.address=0.0.0.0 \
         --webgoat.server.directory=${deployDir}/webgoat-data \
-        --webwolf.server.directory=${deployDir}/webwolf-data \ // THÊM DÒNG NÀY
+        --webwolf.server.directory=${deployDir}/webwolf-data \ 
         > ${deployDir}/app_webgoat_prod.log 2>&1 < /dev/null &
 """
                     }
