@@ -178,7 +178,7 @@ pipeline {
                     echo "🚀 [Deploy] Deploying v2025.3 to Production on Port ${PROD_PORT}..."
                     def deployDir = "${WORKSPACE}/deploy_prod" 
                     
-                    // --- FIX: Thêm grep -v "deploy_prod" để KHÔNG lấy nhầm file jar cũ ---
+                    // Find the new JAR
                     def webgoatJar = sh(script: 'find . -type f -name "webgoat-*.jar" | grep -v "original" | grep -v "webwolf" | grep -v "deploy_prod" | head -n 1', returnStdout: true).trim()
 
                     if (!webgoatJar) {
@@ -189,18 +189,14 @@ pipeline {
                     // 1. Dọn dẹp & Chuẩn bị thư mục
                     sh """
                         echo "🧹 Cleaning up old processes..."
-                        
-                        # Kill process trên port PROD (8090) và WebWolf (9092)
                         lsof -t -i:${PROD_PORT} | xargs -r kill -9 || true
                         lsof -t -i:9092 | xargs -r kill -9 || true
                         sleep 2
                         
                         echo "📂 Creating directories at ${deployDir}..."
-                        # Xóa hẳn thư mục deploy cũ để đảm bảo sạch sẽ
                         rm -rf ${deployDir}
                         mkdir -p ${deployDir}/seeker
                         mkdir -p ${deployDir}/webgoat-data
-                        mkdir -p ${deployDir}/temp_home
                         
                         echo "📋 Copying files..."
                         cp ${webgoatJar} ${deployDir}/webgoat-app.jar
@@ -214,19 +210,19 @@ pipeline {
                             
                             echo "🚀 Starting WebGoat (Prod)..."
                             
-                            nohup java \\
-                                -Duser.home=${deployDir}/temp_home \\
-                                -Dfile.encoding=UTF-8 \\
-                                -Duser.timezone=${TZ} \\
-                                -Xmx2g \\
-                                -javaagent:${deployDir}/seeker/seeker-agent.jar \\
-                                -Dseeker.server.url=${SEEKER_SERVER_URL} \\
-                                -Dseeker.project.key=${SEEKER_PROJECT_KEY} \\
-                                -jar ${deployDir}/webgoat-app.jar \\
-                                --server.address=0.0.0.0 \\
-                                --webgoat.port=${PROD_PORT} \\
-                                --webwolf.port=9092 \\
-                                --webgoat.server.directory=${deployDir}/webgoat-data \\
+                            # --- FIX: Removed -Duser.home to fix FileNotFoundException ---
+                            nohup java \
+                                -Dfile.encoding=UTF-8 \
+                                -Duser.timezone=${TZ} \
+                                -Xmx2g \
+                                -javaagent:${deployDir}/seeker/seeker-agent.jar \
+                                -Dseeker.server.url=${SEEKER_SERVER_URL} \
+                                -Dseeker.project.key=${SEEKER_PROJECT_KEY} \
+                                -jar ${deployDir}/webgoat-app.jar \
+                                --server.address=0.0.0.0 \
+                                --webgoat.port=${PROD_PORT} \
+                                --webwolf.port=9092 \
+                                --webgoat.server.directory=${deployDir}/webgoat-data \
                                 > ${deployDir}/app_webgoat_prod.log 2>&1 < /dev/null &
                         """
                     }
