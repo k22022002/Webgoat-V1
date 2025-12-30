@@ -148,18 +148,26 @@ pipeline {
             }
         }
 
-        stage('6. Deploy to Production') {
+	stage('6. Deploy to Production') {
             steps {
                 script {
                     echo "🚀 [Deploy] Deploying v2025.3 to Production on Port ${PROD_PORT}..."
                     def deployDir = "/opt/webgoat-live"
                     def webgoatJar = sh(script: 'find . -type f -name "webgoat-*.jar" | grep -v "original" | grep -v "webwolf" | head -n 1', returnStdout: true).trim()
 
-                    // --- FIX 7: Cleanup cổng Production (8090) ---
+                    // --- FIX 7: Cleanup & RESET DATABASE ---
                     sh """
                         pkill -f 'webgoat-live' || true
                         lsof -t -i:${PROD_PORT} | xargs -r kill -9 || true
+                        
+                        # 1. Tạo thư mục deploy
                         mkdir -p ${deployDir}/seeker
+                        mkdir -p ${deployDir}/webgoat-data
+                        
+                        # 2. XÓA DỮ LIỆU CŨ (Để reset database user) - QUAN TRỌNG
+                        rm -rf ${deployDir}/webgoat-data/*
+                        rm -rf ~/.webgoat-* || true
+                        
                         cp ${webgoatJar} ${deployDir}/webgoat-app.jar
                         cp -r seeker/* ${deployDir}/seeker/
                     """
@@ -180,6 +188,7 @@ pipeline {
                                 --server.servlet.context-path=/WebGoat \\
                                 --webgoat.port=${PROD_PORT} \\
                                 --webwolf.port=9092 \\
+                                --webgoat.server.directory=${deployDir}/webgoat-data \\  
                                 > ${deployDir}/app_webgoat.log 2>&1 < /dev/null &
                         """
                     }
@@ -187,8 +196,7 @@ pipeline {
                 }
             }
         }
-    }
-    
+    }    
     post {
         always {
              archiveArtifacts artifacts: '*.log', allowEmptyArchive: true
