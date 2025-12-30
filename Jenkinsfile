@@ -254,7 +254,7 @@ pipeline {
                             export SEEKER_ACCESS_TOKEN=${SEEKER_ACCESS_TOKEN}
                             echo "Starting WebGoat & WebWolf (Prod)..."
                             
-			mkdir -p ${deployDir}/webwolf-data
+			mkdir -p ${deployDir}/webwolf-data \
     
     nohup java -Xmx2g \
         -Dfile.encoding=UTF-8 -Duser.timezone=${TZ} \
