@@ -2,10 +2,7 @@ pipeline {
     agent any
 
     tools {
-        // Cập nhật JDK lên phiên bản 25 theo yêu cầu trong README 
-        // Lưu ý: Cần đảm bảo Jenkins Global Tool Configuration đã cấu hình 'JDK 25'
         jdk 'JDK 25' 
-        // Vẫn giữ Maven tool phòng trường hợp script cần, nhưng sẽ ưu tiên dùng ./mvnw
         maven 'Maven3.9.11' 
     }
 
@@ -17,7 +14,6 @@ pipeline {
         SEEKER_PROJECT_KEY = "webgoat-2025-demo"
         JENKINS_NODE_COOKIE = "dontKillMe"
         
-        // Thêm cấu hình Timezone theo khuyến nghị của README (ví dụ: Asia/Ho_Chi_Minh) 
         TZ = "Asia/Ho_Chi_Minh"
     }
 
@@ -25,8 +21,8 @@ pipeline {
         stage('1. Build Application') {
             steps {
                 script {
-                    echo "🚀 [Build] Compiling WebGoat v2025.3..."
-                    // SỬA ĐỔI: Dùng ./mvnw clean install theo hướng dẫn 'Run from sources' 
+                    echo "[Build] Compiling WebGoat v2025.3..."
+                    //  Dùng ./mvnw clean install  Maven Wrapper 
                     // Thêm chmod để đảm bảo quyền thực thi
                     sh "chmod +x mvnw"
                     sh "./mvnw clean install -DskipTests -Dmaven.test.skip=true -Dprocess-exec.skip=true"
@@ -54,9 +50,9 @@ pipeline {
         stage('3. Run App with Seeker (Test)') {
             steps {
                 script {
-                    echo "🚀 [Run] Starting WebGoat 2025 (Test Mode on Port ${TEST_PORT})..."
+                    echo " [Run] Starting WebGoat 2025 (Test Mode on Port ${TEST_PORT})..."
 
-                    // Tìm file JAR (WebGoat 2023.8+ cấu trúc tên có thể thay đổi, lệnh này vẫn giữ nguyên để tìm file sinh ra)
+                    // Tìm file JAR 
                     def webgoatJar = sh(script: 'find . -type f -name "webgoat-*.jar" | grep -v "original" | grep -v "webwolf" | head -n 1', returnStdout: true).trim()
                     if (!webgoatJar) error "❌ ERROR: No JAR file found!"
                     
@@ -70,11 +66,6 @@ pipeline {
                     withCredentials([string(credentialsId: 'seeker-agent-token', variable: 'SEEKER_ACCESS_TOKEN')]) {
                         sh """
                             export SEEKER_ACCESS_TOKEN=${SEEKER_ACCESS_TOKEN}
-                            
-                            # SỬA ĐỔI: Chỉnh sửa tham số chạy theo mục "3.1 Running on a different port" trong README 
-                            # - Loại bỏ --server.port (WebGoat tự map từ webgoat.port)
-                            # - Giữ --server.address=0.0.0.0 để bind IP (Mục 4 README)
-                            # - Thêm Timezone
                             
                             nohup java \\
                                 -Dfile.encoding=UTF-8 \\
@@ -100,7 +91,7 @@ pipeline {
 	stage('4. Health Check & Traffic') {
             steps {
                 script {
-                    echo "💓 [Check] Waiting for WebGoat (Test Instance)..."
+                    echo "[Check] Waiting for WebGoat (Test Instance)..."
                     boolean isReady = false
                 
                     // Check health loop
@@ -113,7 +104,7 @@ pipeline {
                         // Chấp nhận 200 hoặc 401 (App đã lên)
                         if (status == '200' || status == '401') {
                             isReady = true;
-                            echo "✅ WebGoat is UP!"
+                            echo "WebGoat is UP!"
                             break;
                         }
                         sleep 5
@@ -121,15 +112,14 @@ pipeline {
 
                     if (!isReady) {
                         sh "cat app_webgoat_test.log"
-                        error "❌ Timeout: WebGoat Test Instance did not start on port ${TEST_PORT}."
+                        error "Timeout: WebGoat Test Instance did not start on port ${TEST_PORT}."
                     }
 
-                    echo "🚦 [Traffic] Generating traffic for Seeker..."
+                    echo "[Traffic] Generating traffic for Seeker..."
                     
                     sh """
                         rm -f cookies.txt
                         
-                        # --- FIX: Đổi user thành 'webgoat_admin' (đủ 6 ký tự) ---
                         
                         # 1. ĐĂNG KÝ
                         echo "--- Registering Account ---"
@@ -151,10 +141,10 @@ pipeline {
                         curl -s -k -b cookies.txt -o /dev/null http://127.0.0.1:${TEST_PORT}/WebGoat/SqlInjection/attack5a
                     """
                     
-                    echo "✅ Traffic generation completed!"
+                    echo "Traffic generation completed!"
                     sleep 10 
                     
-                    echo "🛑 [Cleanup] Stopping Test Instance..."
+                    echo "[Cleanup] Stopping Test Instance..."
                     sh "lsof -t -i:${TEST_PORT} | xargs -r kill -9 || true"
                 }
             }
@@ -162,7 +152,7 @@ pipeline {
 	stage('5. Quality Gate') {
             steps {
                 script {
-                    echo "🛡️ [Gate] Checking Seeker Compliance..."
+                    echo "[Gate] Checking Seeker Compliance..."
                     sleep 10 
                     
                     int maxCritical = 100
@@ -171,7 +161,7 @@ pipeline {
                     withCredentials([string(credentialsId: 'seeker-api-token', variable: 'SEEKER_API_TOKEN')]) {
                         def apiUrl = "http://192.168.12.190:8082/rest/api/latest/vulnerabilities?format=JSON&projectKeys=${SEEKER_PROJECT_KEY}&status=DETECTED&minSeverity=HIGH"
                         
-                        echo "🔍 Querying Seeker API: ${apiUrl}"
+                        echo "Querying Seeker API: ${apiUrl}"
 
                         try {
                             def response = sh(
@@ -179,26 +169,21 @@ pipeline {
                                 returnStdout: true
                             ).trim()
 
-                            // --- FIX 1: Chấp nhận cả Object '{' và Array '[' ---
                             if (!response || (!response.startsWith("{") && !response.startsWith("["))) {
-                                // Nếu không phải JSON, in ra để debug (thường là lỗi Auth)
-                                echo "⚠️ Raw Response: ${response}"
-                                error "❌ Invalid Response Format: Server did not return JSON."
+                                echo "Raw Response: ${response}"
+                                error "Invalid Response Format: Server did not return JSON."
                             }
 
                             def jsonResult = new groovy.json.JsonSlurper().parseText(response)
                             
-                            // --- FIX 2: Xử lý linh hoạt List/Map ---
                             def vulnList = []
                             if (jsonResult instanceof List) {
-                                // Trường hợp của bạn: API trả về trực tiếp mảng lỗi [ {...}, {...} ]
                                 vulnList = jsonResult
                             } else if (jsonResult instanceof Map) {
-                                // Trường hợp API trả về Object bọc ngoài
                                 if (jsonResult.containsKey('content')) vulnList = jsonResult.content
                                 else if (jsonResult.containsKey('vulnerabilities')) vulnList = jsonResult.vulnerabilities
                                 else if (jsonResult.containsKey('code') && jsonResult.code != 200) {
-                                     error "❌ API Error: ${jsonResult.message}"
+                                     error "API Error: ${jsonResult.message}"
                                 }
                             }
 
@@ -209,7 +194,6 @@ pipeline {
                             def failReasons = []
 
                             vulnList.each { vuln ->
-                                // --- FIX 3: Lấy Severity đơn giản (vì log cho thấy nó là String) ---
                                 String currentSev = vuln.Severity ? vuln.Severity.toString().trim().toUpperCase() : "UNKNOWN"
 
                                 if (currentSev == 'CRITICAL') {
@@ -222,21 +206,21 @@ pipeline {
                                 }
                             }
 
-                            echo "📊 Seeker Report Summary:"
+                            echo "Seeker Report Summary:"
                             echo "   - Critical: ${criticalCount} / Allowed: ${maxCritical}"
                             echo "   - High:     ${highCount} / Allowed: ${maxHigh}"
 
                             if (criticalCount > maxCritical || highCount > maxHigh) {
-                                echo "🔴 Details of violations:"
+                                echo "Details of violations:"
                                 failReasons.each { echo "   - ${it}" }
-                                error "❌ Quality Gate FAILED: Found ${criticalCount} Critical & ${highCount} High vulnerabilities."
+                                error "Quality Gate FAILED: Found ${criticalCount} Critical & ${highCount} High vulnerabilities."
                             } else {
-                                echo "✅ Quality Gate PASSED."
+                                echo "Quality Gate PASSED."
                             }
 
                         } catch (Exception e) {
-                            echo "⚠️ Script Error: ${e.getMessage()}"
-                            error "❌ Failed to verify Quality Gate."
+                            echo "Script Error: ${e.getMessage()}"
+                            error "Failed to verify Quality Gate."
                         }
                     }
                 }
@@ -245,20 +229,20 @@ pipeline {
 	stage('6. Deploy to Production') {
             steps {
                 script {
-                    echo "🚀 [Deploy] Deploying v2025.3 to Production on Port ${PROD_PORT}..."
+                    echo "[Deploy] Deploying v2025.3 to Production on Port ${PROD_PORT}..."
                     def deployDir = "${WORKSPACE}/deploy_prod" 
                     
                     // Find the new JAR
                     def webgoatJar = sh(script: 'find . -type f -name "webgoat-*.jar" | grep -v "original" | grep -v "webwolf" | grep -v "deploy_prod" | head -n 1', returnStdout: true).trim()
 
                     if (!webgoatJar) {
-                        error "❌ ERROR: No new WebGoat JAR file found in build folders!"
+                        error "ERROR: No new WebGoat JAR file found in build folders!"
                     }
-                    echo "📦 Found JAR: ${webgoatJar}"
+                    echo "Found JAR: ${webgoatJar}"
 
                     // 1. Dọn dẹp & Chuẩn bị thư mục
                     sh """
-                        echo "🧹 Cleaning up old processes..."
+                        echo "Cleaning up old processes..."
                         lsof -t -i:${PROD_PORT} | xargs -r kill -9 || true
                         lsof -t -i:9092 | xargs -r kill -9 || true
                         sleep 2
@@ -268,7 +252,7 @@ pipeline {
                         mkdir -p ${deployDir}/seeker
                         mkdir -p ${deployDir}/webgoat-data
                         
-                        echo "📋 Copying files..."
+                        echo "Copying files..."
                         cp ${webgoatJar} ${deployDir}/webgoat-app.jar
                         cp -r seeker/* ${deployDir}/seeker/
                     """
@@ -278,9 +262,8 @@ pipeline {
                         sh """
                             export SEEKER_ACCESS_TOKEN=${SEEKER_ACCESS_TOKEN}
                             
-                            echo "🚀 Starting WebGoat (Prod)..."
+                            echo "Starting WebGoat (Prod)..."
                             
-                            # --- FIX: Removed -Duser.home to fix FileNotFoundException ---
                             nohup java \
                                 -Dfile.encoding=UTF-8 \
                                 -Duser.timezone=${TZ} \
@@ -299,14 +282,14 @@ pipeline {
 
                     // 3. Đợi Server lên và TỰ ĐỘNG TẠO TÀI KHOẢN
                     script {
-                        echo "⏳ Waiting for WebGoat (Prod) to initialize..."
+                        echo "Waiting for WebGoat (Prod) to initialize..."
                         boolean prodReady = false
                         
                         for (int i = 1; i <= 60; i++) {
                             def status = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${PROD_PORT}/WebGoat/login || echo '000'", returnStdout: true).trim()
                             
                             if (status == '200') {
-                                echo "✅ Server is UP! Auto-registering admin account..."
+                                echo "Server is UP! Auto-registering admin account..."
                                 
                                 sh """
                                     curl -s -k -X POST http://127.0.0.1:${PROD_PORT}/WebGoat/register.mvc \\
@@ -323,12 +306,12 @@ pipeline {
                         }
                         
                         if (!prodReady) {
-                             echo "🔴 Deployment FAILED. Printing application logs:"
+                             echo "Deployment FAILED. Printing application logs:"
                              sh "cat ${deployDir}/app_webgoat_prod.log || echo 'Log file not found!'"
-                             error "❌ Deployment Failed: Production server did not start on port ${PROD_PORT}."
+                             error "Deployment Failed: Production server did not start on port ${PROD_PORT}."
                         }
                     }
-                    echo "✅ Deployment Process Finished!"
+                    echo "Deployment Process Finished!"
                 }
             }
         }
