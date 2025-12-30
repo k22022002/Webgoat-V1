@@ -155,44 +155,75 @@ pipeline {
                     def deployDir = "/opt/webgoat-live"
                     def webgoatJar = sh(script: 'find . -type f -name "webgoat-*.jar" | grep -v "original" | grep -v "webwolf" | head -n 1', returnStdout: true).trim()
 
-                    // Cleanup & Reset
+                    // 1. Dọn dẹp & Chuẩn bị thư mục
                     sh """
+                        echo "🧹 Cleaning up old processes..."
                         pkill -f 'webgoat-live' || true
                         lsof -t -i:${PROD_PORT} | xargs -r kill -9 || true
                         
+                        echo "📂 Creating directories..."
                         mkdir -p ${deployDir}/seeker
                         mkdir -p ${deployDir}/webgoat-data
+                        mkdir -p ${deployDir}/temp_home  # Tạo thư mục Home giả
                         
-                        # Xóa data cũ để tránh lỗi cache
+                        # Xóa data cũ để reset database hoàn toàn
                         rm -rf ${deployDir}/webgoat-data/*
+                        rm -rf ${deployDir}/temp_home/*
                         
                         cp ${webgoatJar} ${deployDir}/webgoat-app.jar
                         cp -r seeker/* ${deployDir}/seeker/
                     """
 
                     withCredentials([string(credentialsId: 'seeker-agent-token', variable: 'SEEKER_ACCESS_TOKEN')]) {
+                        // 2. Khởi chạy ứng dụng (Thêm -Duser.home để sửa lỗi crash)
                         sh """
                             export SEEKER_ACCESS_TOKEN=${SEEKER_ACCESS_TOKEN}
                             
-                            # --- FIX QUAN TRỌNG: Thêm -Duser.home để sửa lỗi FileNotFoundException ---
-                            nohup java \\
-                                -Duser.home=${deployDir}/webgoat-data \\
-                                -Dfile.encoding=UTF-8 \\
-                                -Xmx2g \\
-                                -javaagent:${deployDir}/seeker/seeker-agent.jar \\
-                                -Dseeker.server.url=${SEEKER_SERVER_URL} \\
-                                -Dseeker.project.key=${SEEKER_PROJECT_KEY} \\
-                                -jar ${deployDir}/webgoat-app.jar \\
-                                --server.port=${PROD_PORT} \\
-                                --server.address=0.0.0.0 \\
-                                --server.servlet.context-path=/WebGoat \\
-                                --webgoat.port=${PROD_PORT} \\
-                                --webwolf.port=9092 \\
-                                --webgoat.server.directory=${deployDir}/webgoat-data \\
+                            echo "🚀 Starting WebGoat..."
+                            nohup java \
+                                -Duser.home=${deployDir}/temp_home \
+                                -Dfile.encoding=UTF-8 \
+                                -Xmx2g \
+                                -javaagent:${deployDir}/seeker/seeker-agent.jar \
+                                -Dseeker.server.url=${SEEKER_SERVER_URL} \
+                                -Dseeker.project.key=${SEEKER_PROJECT_KEY} \
+                                -jar ${deployDir}/webgoat-app.jar \
+                                --server.port=${PROD_PORT} \
+                                --server.address=0.0.0.0 \
+                                --server.servlet.context-path=/WebGoat \
+                                --webgoat.port=${PROD_PORT} \
+                                --webwolf.port=9092 \
+                                --webgoat.server.directory=${deployDir}/webgoat-data \
                                 > ${deployDir}/app_webgoat.log 2>&1 < /dev/null &
                         """
                     }
-                    echo "✅ Deployed v2025.3 Successfully!"
+
+                    // 3. Đợi Server lên và TỰ ĐỘNG TẠO TÀI KHOẢN
+                    script {
+                        echo "⏳ Waiting for WebGoat to initialize..."
+                        sleep 15 // Chờ 15s để Spring Boot khởi động
+                        
+                        // Thử ping chờ server sống dậy
+                        for (int i = 1; i <= 20; i++) {
+                            def status = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${PROD_PORT}/WebGoat/login || echo '000'", returnStdout: true).trim()
+                            if (status == '200' || status == '302') {
+                                echo "✅ Server is UP! Auto-registering admin account..."
+                                
+                                // --- LỆNH TẠO TÀI KHOẢN TỰ ĐỘNG ---
+                                sh """
+                                    curl -s -k -X POST http://127.0.0.1:${PROD_PORT}/WebGoat/register.mvc \\
+                                        -d "username=admin&password=password&matchingPassword=password&agree=agree" \\
+                                        -H "Content-Type: application/x-www-form-urlencoded"
+                                """
+                                echo "🎉 Account created: User='admin', Pass='password'"
+                                break
+                            }
+                            echo "Waiting... (${i}/20)"
+                            sleep 5
+                        }
+                    }
+                    
+                    echo "✅ Deployment Process Finished!"
                 }
             }
         }
