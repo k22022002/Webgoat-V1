@@ -225,92 +225,93 @@ pipeline {
             }
         }
 	stage('6. Deploy to Production') {
-    steps {
-        script {
-            echo "[Deploy] Deploying v2025.3 to Production on Port ${PROD_PORT}..."
-            def deployDir = "${WORKSPACE}/deploy_prod" 
-            
-            // Tìm JAR (loại bỏ "original" và "deploy_prod")
-            def webgoatJar = sh(script: 'find . -type f -name "webgoat-*.jar" | grep -v "original" | grep -v "deploy_prod" | head -n 1', returnStdout: true).trim()
-
-            if (!webgoatJar) {
-                error "ERROR: No new WebGoat JAR file found!"
-            }
-            echo "Found JAR: ${webgoatJar}"
-
-            // 1. Dọn dẹp & Chuẩn bị thư mục (Thêm tạo webwolf-data)
-            sh """
-                echo "Cleaning up ports ${PROD_PORT} and ${WOLF_PROD_PORT}..."
-                fuser -k ${PROD_PORT}/tcp || true
-                fuser -k ${WOLF_PROD_PORT}/tcp || true
-                sleep 2
-                
-                mkdir -p ${deployDir}/webgoat-data
-                mkdir -p ${deployDir}/webwolf-data
-                cp ${webgoatJar} ${deployDir}/webgoat-app.jar
-                cp -r seeker/* ${deployDir}/seeker/
-                
-                # Cấp quyền ghi để tránh lỗi 500 khi upload file
-                chmod -R 777 ${deployDir}/webgoat-data
-                chmod -R 777 ${deployDir}/webwolf-data
-            """
-
-            withCredentials([string(credentialsId: 'seeker-agent-token', variable: 'SEEKER_ACCESS_TOKEN')]) {
-                // SỬA LỖI CÚ PHÁP: Xóa khoảng trắng sau các dấu gạch chéo ngược (\)
-                sh """
-                    export SEEKER_ACCESS_TOKEN=${SEEKER_ACCESS_TOKEN}
-                    echo "Starting WebGoat & WebWolf (Prod)..."
+            steps {
+                script {
+                    echo "[Deploy] Deploying v2025.3 to Production on Port ${PROD_PORT}..."
+                    def deployDir = "${WORKSPACE}/deploy_prod" 
                     
-                    nohup java -Xmx2g \\
-                        -Dfile.encoding=UTF-8 \\
-                        -Duser.timezone=${TZ} \\
-                        -javaagent:${deployDir}/seeker/seeker-agent.jar \\
-                        -Dseeker.server.url=${SEEKER_SERVER_URL} \\
-                        -Dseeker.project.key=${SEEKER_PROJECT_KEY} \\
-                        -jar ${deployDir}/webgoat-app.jar \\
-                        --server.address=0.0.0.0 \\
-                        --webgoat.port=${PROD_PORT} \\
-                        --webwolf.port=${WOLF_PROD_PORT} \\
-                        --webwolf.address=0.0.0.0 \\
-                        --webgoat.server.directory=${deployDir}/webgoat-data \\
-                        --webwolf.server.directory=${deployDir}/webwolf-data \\
-                        > ${deployDir}/app_webgoat_prod.log 2>&1 < /dev/null &
-                """
-            }
+                    // Tìm JAR (loại bỏ "original" và "deploy_prod")
+                    def webgoatJar = sh(script: 'find . -type f -name "webgoat-*.jar" | grep -v "original" | grep -v "deploy_prod" | head -n 1', returnStdout: true).trim()
 
-            // 2. Đợi Server lên (Health Check cho cả 2)
-            script {
-                echo "Waiting for WebGoat & WebWolf to initialize..."
-                boolean prodReady = false
-                
-                for (int i = 1; i <= 60; i++) {
-                    def gStatus = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${PROD_PORT}/WebGoat/login || echo '000'", returnStdout: true).trim()
-                    def wStatus = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${WOLF_PROD_PORT}/WebWolf/login || echo '000'", returnStdout: true).trim()
-                    
-                    if (gStatus == '200' && (wStatus == '200' || wStatus == '302')) {
-                        echo "Both servers are UP!"
-                        // Tự động đăng ký admin
-                        sh """
-                            curl -s -k -X POST http://127.0.0.1:${PROD_PORT}/WebGoat/register.mvc \\
-                                -d "username=webgoatadmin&password=password&matchingPassword=password&agree=agree" \\
-                                -H "Content-Type: application/x-www-form-urlencoded"
-                        """
-                        prodReady = true
-                        break
+                    if (!webgoatJar) {
+                        error "ERROR: No new WebGoat JAR file found!"
                     }
-                    echo "Waiting... (Goat: \${gStatus}, Wolf: \${wStatus}) [\${i}/60]"
-                    sleep 5
-                }
-                
-                if (!prodReady) {
-                     error "Deployment Failed: Servers did not start properly."
+                    echo "Found JAR: ${webgoatJar}"
+
+                    // 1. Dọn dẹp & Chuẩn bị thư mục (Thêm tạo webwolf-data và cấp quyền)
+                    sh """
+                        echo "Cleaning up ports ${PROD_PORT} and ${WOLF_PROD_PORT}..."
+                        fuser -k ${PROD_PORT}/tcp || true
+                        fuser -k ${WOLF_PROD_PORT}/tcp || true
+                        sleep 2
+                        
+                        mkdir -p ${deployDir}/webgoat-data
+                        mkdir -p ${deployDir}/webwolf-data
+                        cp ${webgoatJar} ${deployDir}/webgoat-app.jar
+                        cp -r seeker/* ${deployDir}/seeker/
+                        
+                        # Cấp quyền ghi để tránh lỗi 500 khi upload file
+                        chmod -R 777 ${deployDir}/webgoat-data
+                        chmod -R 777 ${deployDir}/webwolf-data
+                    """
+
+                    withCredentials([string(credentialsId: 'seeker-agent-token', variable: 'SEEKER_ACCESS_TOKEN')]) {
+                        sh """
+                            export SEEKER_ACCESS_TOKEN=${SEEKER_ACCESS_TOKEN}
+                            echo "Starting WebGoat & WebWolf (Prod)..."
+                            
+                            nohup java -Xmx2g \\
+                                -Dfile.encoding=UTF-8 \\
+                                -Duser.timezone=${TZ} \\
+                                -javaagent:${deployDir}/seeker/seeker-agent.jar \\
+                                -Dseeker.server.url=${SEEKER_SERVER_URL} \\
+                                -Dseeker.project.key=${SEEKER_PROJECT_KEY} \\
+                                -jar ${deployDir}/webgoat-app.jar \\
+                                --server.address=0.0.0.0 \\
+                                --webgoat.port=${PROD_PORT} \\
+                                --webwolf.port=${WOLF_PROD_PORT} \\
+                                --webwolf.address=0.0.0.0 \\
+                                --webgoat.server.directory=${deployDir}/webgoat-data \\
+                                --webwolf.server.directory=${deployDir}/webwolf-data \\
+                                > ${deployDir}/app_webgoat_prod.log 2>&1 < /dev/null &
+                        """
+                    }
+
+                    // 2. Đợi Server lên (Health Check cho cả 2)
+                    echo "Waiting for WebGoat & WebWolf to initialize..."
+                    boolean prodReady = false
+                    
+                    for (int i = 1; i <= 60; i++) {
+                        def gStatus = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${PROD_PORT}/WebGoat/login || echo '000'", returnStdout: true).trim()
+                        def wStatus = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${WOLF_PROD_PORT}/WebWolf/login || echo '000'", returnStdout: true).trim()
+                        
+                        if (gStatus == '200' && (wStatus == '200' || wStatus == '302')) {
+                            echo "Both servers are UP!"
+                            // Tự động đăng ký admin
+                            sh """
+                                curl -s -k -X POST http://127.0.0.1:${PROD_PORT}/WebGoat/register.mvc \\
+                                    -d "username=webgoatadmin&password=password&matchingPassword=password&agree=agree" \\
+                                    -H "Content-Type: application/x-www-form-urlencoded"
+                            """
+                            prodReady = true
+                            break
+                        }
+                        echo "Waiting... (Goat: ${gStatus}, Wolf: ${wStatus}) [${i}/60]"
+                        sleep 5
+                    }
+                    
+                    if (!prodReady) {
+                        sh "cat ${deployDir}/app_webgoat_prod.log || echo 'Log file not found!'"
+                        error "Deployment Failed: Production server did not start properly."
+                    }
+                    echo "Deployment Process Finished!"
                 }
             }
         }
-    }
+    } // Kết thúc khối stages
     post {
         always {
              archiveArtifacts artifacts: '*.log', allowEmptyArchive: true
         }
     }
-}
+} // Kết thúc khối pipeline
