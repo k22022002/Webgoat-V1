@@ -76,7 +76,7 @@ pipeline {
                                 --server.servlet.context-path=/WebGoat \\ 
                                 --webgoat.port=${APP_PORT} \\
                                 --webwolf.port=9091 \\
-                                > app_webgoat.log 2>&1 &
+				> app_webgoat.log 2>&1 < /dev/null &
                         """
                     }
                 }
