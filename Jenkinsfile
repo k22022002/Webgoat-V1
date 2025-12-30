@@ -18,7 +18,7 @@ pipeline {
             steps {
                 script {
                     echo "🚀 [Build] Compiling WebGoat v2025.3..."
-                    sh "mvn clean install -DskipTests"
+		    sh "mvn clean install -DskipTests -Dmaven.test.skip=true -Dprocess-exec.skip=true"
                 }
             }
         }
