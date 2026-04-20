@@ -318,6 +318,7 @@ pipeline {
            
                         mkdir -p ${deployDir}/webgoat-data
                         mkdir -p ${deployDir}/webwolf-data
+			mkdir -p ${deployDir}/seeker
                         cp ${webgoatJar} ${deployDir}/webgoat-app.jar
                         cp -r seeker/* ${deployDir}/seeker/
                         
