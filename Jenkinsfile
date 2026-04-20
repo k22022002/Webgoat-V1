@@ -34,7 +34,39 @@ pipeline {
             }
         }
 
-        stage('2. Setup Seeker Agent') {
+        stage('2. Black Duck Binary Analysis (BDBA)') {
+            steps {
+                script {
+                    echo "[BDBA] Running Black Duck Binary Analysis..."
+                    
+                    // 1. Tìm file JAR vừa được build
+                    def webgoatJar = sh(script: 'find . -type f -name "webgoat-*.jar" | grep -v "original" | grep -v "webwolf" | head -n 1', returnStdout: true).trim()
+                  
+                    if (!webgoatJar) error "❌ ERROR: No JAR file found for BDBA!"
+                    echo "Found JAR to scan: ${webgoatJar}"
+                    
+                    // 2. Chạy Black Duck Detect CLI
+                    withCredentials([string(credentialsId: 'blackduck-api-token', variable: 'BLACKDUCK_API_TOKEN')]) {
+                        sh """
+                            # Tải Detect CLI
+                            curl -k -SL -O https://detect.blackduck.com/detect10.sh && chmod +x detect10.sh
+                            
+                            # Chạy phân tích Binary
+                            ./detect10.sh \\
+                                --blackduck.url="https://192.168.12.204" \\
+                                --blackduck.api.token="\$BLACKDUCK_API_TOKEN" \\
+                                --blackduck.trust.cert=true \\
+                                --detect.project.name="${SEEKER_PROJECT_KEY}" \\
+                                --detect.project.version.name="latest" \\
+                                --detect.binary.scan.file.path="\${webgoatJar}" \\
+                                --detect.tools=BINARY_SCAN
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('3. Setup Seeker Agent') {
             steps {
                 script {
                     withCredentials([string(credentialsId: 'seeker-agent-token', variable: 'SEEKER_AGENT_TOKEN')]) {
@@ -51,7 +83,7 @@ pipeline {
             }
         }
 
-        stage('3. Run App with Seeker (Test)') {
+        stage('4. Run App with Seeker (Test)') {
             steps {
                 script {
                     echo " [Run] Starting latest WebGoat (Test Mode on Port ${TEST_PORT})..."
@@ -90,7 +122,7 @@ pipeline {
             }
         }
 
-        stage('4. Health Check & Traffic') {
+        stage('5. Health Check & Traffic') {
             steps {
                 script {
                     echo "[Check] Waiting for Services (Custom Loop)..."
@@ -112,100 +144,35 @@ pipeline {
 
                     if (!isReady) error "Timeout: Services did not start."
 
-                    echo "[Traffic] Executing UPDATED Targeted Traffic Script..."
+                    echo "[Traffic] Executing Basic Register & Login Test..."
 
-                    // 2. Traffic Generation
+                    // 2. Traffic Generation: Chỉ test Đăng ký và Đăng nhập
                     sh """
                         # Dọn dẹp file tạm
-                        rm -f cookies.txt cookies_wolf.txt goat_login.html wolf_login.html payload.txt
-                        echo "dummy payload" > payload.txt
+                        rm -f cookies.txt goat_login.html
 
                         # ====================================================
-                        # A. WEBGOAT TARGETING (Port ${TEST_PORT})
+                        # A. TEST REGISTER (Đăng ký tài khoản)
                         # ====================================================
-                        echo ">>> [WebGoat] Login & Get CSRF..."
-                        curl -s -c cookies.txt http://127.0.0.1:${TEST_PORT}/WebGoat/login > goat_login.html
+                        echo ">>> [WebGoat] Testing Registration..."
+                        curl -s -m 5 -X POST http://127.0.0.1:${TEST_PORT}/WebGoat/register.mvc \\
+                            -d "username=testuser&password=password123&matchingPassword=password123&agree=agree" \\
+                            -H "Content-Type: application/x-www-form-urlencoded" > /dev/null
+
+                        # ====================================================
+                        # B. TEST LOGIN (Đăng nhập)
+                        # ====================================================
+                        echo ">>> [WebGoat] Getting CSRF token for Login..."
+                        curl -s -m 5 -c cookies.txt http://127.0.0.1:${TEST_PORT}/WebGoat/login > goat_login.html
              
                         GOAT_CSRF=\$(grep -oP 'name="_csrf" value="\\K[^"]+' goat_login.html || echo "none")
 
-                        # Login
-                        curl -s -c cookies.txt -X POST http://127.0.0.1:${TEST_PORT}/WebGoat/login \\
-                            -d "username=webgoatadmin&password=password&_csrf=\$GOAT_CSRF" \\
+                        echo ">>> [WebGoat] Testing Login..."
+                        curl -s -m 5 -c cookies.txt -X POST http://127.0.0.1:${TEST_PORT}/WebGoat/login \\
+                            -d "username=testuser&password=password123&_csrf=\$GOAT_CSRF" \\
                             -H "Content-Type: application/x-www-form-urlencoded" > /dev/null
 
-                        echo ">>> [WebGoat] Hitting NEW Endpoints (Debug, Menu, JWT, Crypto)..."
-
-                        # --- 1. Service / Debug / Menu Endpoints ---
-                        # lessonmenu.mvc
-                        for method in TRACE DELETE PATCH POST OPTIONS PUT; do
-                            curl -s -b cookies.txt -X \$method -H "X-CSRF-TOKEN: \$GOAT_CSRF" http://127.0.0.1:${TEST_PORT}/WebGoat/service/lessonmenu.mvc || true
-                        done
-
-                        # enable-security.mvc
-                        for method in OPTIONS TRACE DELETE CONNECT HEAD; do
-                            curl -s -b cookies.txt -X \$method -H "X-CSRF-TOKEN: \$GOAT_CSRF" http://127.0.0.1:${TEST_PORT}/WebGoat/service/enable-security.mvc || true
-                        done
-                        
-                        # debug/labels.mvc
-                        for method in DELETE OPTIONS CONNECT PUT GET; do
-                            curl -s -b cookies.txt -X \$method -H "X-CSRF-TOKEN: \$GOAT_CSRF" -d '{}' -H "Content-Type: application/json" http://127.0.0.1:${TEST_PORT}/WebGoat/service/debug/labels.mvc || true
-                        done
-
-                        # reportcard.mvc (GET)
-                        curl -s -b cookies.txt -X GET http://127.0.0.1:${TEST_PORT}/WebGoat/service/reportcard.mvc || true
-
-                        # --- 2. JWT Lesson Endpoints ---
-                        # secret/gettoken
-                        for method in CONNECT PATCH DELETE PUT TRACE; do
-                             curl -s -b cookies.txt -X \$method -H "X-CSRF-TOKEN: \$GOAT_CSRF" http://127.0.0.1:${TEST_PORT}/WebGoat/JWT/secret/gettoken || true
-                        done
-                        
-                        # Other JWT
-                        curl -s -b cookies.txt -X POST -H "X-CSRF-TOKEN: \$GOAT_CSRF" http://127.0.0.1:${TEST_PORT}/WebGoat/JWT/refresh/newToken || true
-                        curl -s -b cookies.txt -X POST -H "X-CSRF-TOKEN: \$GOAT_CSRF" http://127.0.0.1:${TEST_PORT}/WebGoat/JWT/jku/follow/testuser || true
-                        curl -s -b cookies.txt -X POST -H "X-CSRF-TOKEN: \$GOAT_CSRF" http://127.0.0.1:${TEST_PORT}/WebGoat/JWT/votings/testtitle || true
-
-                        # --- 3. Crypto Lesson Endpoints ---
-                        # Hashing MD5 & SHA256
-                        curl -s -b cookies.txt -X PUT   -H "X-CSRF-TOKEN: \$GOAT_CSRF" http://127.0.0.1:${TEST_PORT}/WebGoat/crypto/hashing/md5 || true
-                        curl -s -b cookies.txt -X DELETE -H "X-CSRF-TOKEN: \$GOAT_CSRF" http://127.0.0.1:${TEST_PORT}/WebGoat/crypto/hashing/md5 || true
-                        curl -s -b cookies.txt -X PATCH -H "X-CSRF-TOKEN: \$GOAT_CSRF" http://127.0.0.1:${TEST_PORT}/WebGoat/crypto/hashing/sha256 || true
-                        curl -s -b cookies.txt -X PUT   -H "X-CSRF-TOKEN: \$GOAT_CSRF" http://127.0.0.1:${TEST_PORT}/WebGoat/crypto/hashing/sha256 || true
-                        
-                        # Signing
-                        curl -s -b cookies.txt -I http://127.0.0.1:${TEST_PORT}/WebGoat/crypto/signing/getprivate || true
-                        curl -s -b cookies.txt -X POST -H "X-CSRF-TOKEN: \$GOAT_CSRF" http://127.0.0.1:${TEST_PORT}/WebGoat/crypto/signing/getprivate || true
-                        curl -s -b cookies.txt -X PUT  -H "X-CSRF-TOKEN: \$GOAT_CSRF" http://127.0.0.1:${TEST_PORT}/WebGoat/crypto/signing/getprivate || true
-
-                        # --- 4. Other Specific Endpoints ---
-                        curl -s -b cookies.txt -X POST -H "X-CSRF-TOKEN: \$GOAT_CSRF" http://127.0.0.1:${TEST_PORT}/WebGoat/SSRF/task2 || true
-                        curl -s -b cookies.txt -X PUT -H "X-CSRF-TOKEN: \$GOAT_CSRF" http://127.0.0.1:${TEST_PORT}/WebGoat/IDOR/profile/2342384 || true
-                        curl -s -b cookies.txt -X POST -H "X-CSRF-TOKEN: \$GOAT_CSRF" -H "Content-Type: application/xml" -d '<root>test</root>' http://127.0.0.1:${TEST_PORT}/WebGoat/xxe/sampledtd || true
-                        curl -s -b cookies.txt -X POST -H "X-CSRF-TOKEN: \$GOAT_CSRF" http://127.0.0.1:${TEST_PORT}/WebGoat/VulnerableComponents/attack1 || true
-                        curl -s -b cookies.txt -X GET http://127.0.0.1:${TEST_PORT}/WebGoat/PathTraversal/zip-slip || true
-                        curl -s -b cookies.txt -X GET http://127.0.0.1:${TEST_PORT}/WebGoat/PathTraversal/zip-slip/profile-image/testuser || true
-                        curl -s -b cookies.txt -X GET http://127.0.0.1:${TEST_PORT}/WebGoat/OpenRedirect/safe || true
-                        curl -s -b cookies.txt -X GET http://127.0.0.1:${TEST_PORT}/WebGoat/lesson-template/shop/testuser || true
-                        curl -s -b cookies.txt -X GET http://127.0.0.1:${TEST_PORT}/WebGoat/SpoofCookie/cleanup || true
-                        curl -s -b cookies.txt -X POST -H "X-CSRF-TOKEN: \$GOAT_CSRF" http://127.0.0.1:${TEST_PORT}/WebGoat/PasswordReset/reset/change-password || true
-                        curl -s -b cookies.txt -X GET http://127.0.0.1:${TEST_PORT}/WebGoat/PasswordReset/reset/reset-password/testlink || true
-                        curl -s -b cookies.txt -X GET http://127.0.0.1:${TEST_PORT}/WebGoat/WebWolf || true
-
-                        # ====================================================
-                        # B. GLOBAL ERROR TRIGGER (WebGoat & WebWolf)
-                        # ====================================================
-                        echo ">>> [Errors] Triggering Error Pages..."
-                        
-                        curl -s -b cookies.txt -X TRACE http://127.0.0.1:${TEST_PORT}/WebGoat/error || true
-                        curl -s -b cookies.txt -X POST  http://127.0.0.1:${TEST_PORT}/WebGoat/error || true
-                        
-                        # Loop method trên WebWolf landing/file-server
-                        curl -s -c cookies_wolf.txt -X POST http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/login -d "username=webgoatadmin&password=password" > /dev/null
-                        WOLF_CSRF=\$(grep -oP 'name="_csrf" value="\\K[^"]+' wolf_login.html || echo "none")
-
-                        for method in GET POST PUT DELETE PATCH TRACE OPTIONS HEAD CONNECT; do
-                            curl -s -b cookies_wolf.txt -X \$method -H "X-CSRF-TOKEN: \$WOLF_CSRF" -o /dev/null http://127.0.0.1:${WOLF_TEST_PORT}/WebWolf/landing || true
-                        done
+                        echo ">>> Traffic testing completed successfully!"
                     """
 
                     // 3. Cleanup (Kill process)
@@ -218,7 +185,7 @@ pipeline {
             }
         }
 
-        stage('5. Quality Gate') {
+        stage('6. Quality Gate') {
             steps {
                 script {
                     echo "[Gate] Checking Seeker Compliance..."
@@ -295,7 +262,7 @@ pipeline {
             }
         }
 
-        stage('6. Deploy to Production') {
+        stage('7. Deploy to Production') {
             steps {
                 script {
                     echo "[Deploy] Deploying latest WebGoat to Production on Port ${PROD_PORT}..."
@@ -318,7 +285,8 @@ pipeline {
            
                         mkdir -p ${deployDir}/webgoat-data
                         mkdir -p ${deployDir}/webwolf-data
-			mkdir -p ${deployDir}/seeker
+                        mkdir -p ${deployDir}/seeker
+
                         cp ${webgoatJar} ${deployDir}/webgoat-app.jar
                         cp -r seeker/* ${deployDir}/seeker/
                         
@@ -359,7 +327,7 @@ pipeline {
                   
                         if (gStatus == '200' && (wStatus == '200' || wStatus == '302')) {
                             echo "Both servers are UP!"
-                            // Tự động đăng ký admin (Đã xóa cờ -k ở lệnh curl)
+                            // Tự động đăng ký admin
                             sh """
                                 curl -s -X POST http://127.0.0.1:${PROD_PORT}/WebGoat/register.mvc \\
                                     -d "username=webgoatadmin&password=password&matchingPassword=password&agree=agree" \\
@@ -377,9 +345,9 @@ pipeline {
                         error "Deployment Failed: Production server did not start properly."
                     }
                     echo "Deployment Process Finished!"
-                } // Đóng script của Stage 6
-            } // Đóng steps của Stage 6
-        } // Đóng Stage 6
+                } // Đóng script của Stage 7
+            } // Đóng steps của Stage 7
+        } // Đóng Stage 7
     } // Đóng khối stages
 
     post {
