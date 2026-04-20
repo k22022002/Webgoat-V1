@@ -34,7 +34,7 @@ pipeline {
             }
         }
 
-        stage('2. Black Duck Binary Analysis (BDBA)') {
+	stage('2. Black Duck Binary Analysis (BDBA)') {
             steps {
                 script {
                     echo "[BDBA] Running Black Duck Binary Analysis..."
@@ -58,14 +58,13 @@ pipeline {
                                 --blackduck.trust.cert=true \\
                                 --detect.project.name="${SEEKER_PROJECT_KEY}" \\
                                 --detect.project.version.name="latest" \\
-                                --detect.binary.scan.file.path="\${webgoatJar}" \\
+                                --detect.binary.scan.file.path="${webgoatJar}" \\
                                 --detect.tools=BINARY_SCAN
                         """
                     }
                 }
             }
         }
-
         stage('3. Setup Seeker Agent') {
             steps {
                 script {
