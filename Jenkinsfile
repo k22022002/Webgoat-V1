@@ -51,16 +51,14 @@ pipeline {
                             # Tải Detect CLI
                             curl -k -SL -O https://detect.blackduck.com/detect10.sh && chmod +x detect10.sh
                             
-                            # Chạy phân tích Binary
-                            ./detect10.sh \\
-                                --blackduck.url="https://192.168.12.204" \\
-                                --blackduck.api.token="\$BLACKDUCK_API_TOKEN" \\
-                                --blackduck.trust.cert=true \\
-                                --detect.project.name="${SEEKER_PROJECT_KEY}" \\
-                                --detect.project.version.name="latest" \\
-                                --detect.binary.scan.file.path="${webgoatJar}" \\
-                                --detect.tools=BINARY_SCAN
-                        """
+			    ./detect10.sh \
+                                --blackduck.url="https://192.168.12.204" \
+                                --blackduck.api.token="\$BLACKDUCK_API_TOKEN" \
+                                --blackduck.trust.cert=true \
+                                --detect.project.name="${SEEKER_PROJECT_KEY}" \
+                                --detect.project.version.name="latest" \
+                                --detect.binary.scan.file.path="${webgoatJar}" \
+                                --detect.tools=DETECTOR,SIGNATURE_SCAN,BINARY_SCAN                        """
                     }
                 }
             }
