@@ -25,7 +25,6 @@ pipeline {
             steps {
                 script {
                     echo "[Build] Compiling latest WebGoat..."
-   
                     // Dùng ./mvnw clean install Maven Wrapper 
                     // Thêm chmod để đảm bảo quyền thực thi
                     sh "chmod +x mvnw"
@@ -34,10 +33,10 @@ pipeline {
             }
         }
 
-	stage('2. Black Duck Binary Analysis (BDBA)') {
+        stage('2. Black Duck SCA & Binary Analysis (BDBA)') {
             steps {
                 script {
-                    echo "[BDBA] Running Black Duck Binary Analysis..."
+                    echo "[SCA & BDBA] Running Open Source and Binary Analysis..."
                     
                     // 1. Tìm file JAR vừa được build
                     def webgoatJar = sh(script: 'find . -type f -name "webgoat-*.jar" | grep -v "original" | grep -v "webwolf" | head -n 1', returnStdout: true).trim()
@@ -45,25 +44,67 @@ pipeline {
                     if (!webgoatJar) error "❌ ERROR: No JAR file found for BDBA!"
                     echo "Found JAR to scan: ${webgoatJar}"
                     
-                    // 2. Chạy Black Duck Detect CLI
+                    // 2. Chạy Black Duck Detect CLI (Quét cả Source và Binary)
                     withCredentials([string(credentialsId: 'blackduck-api-token', variable: 'BLACKDUCK_API_TOKEN')]) {
                         sh """
                             # Tải Detect CLI
                             curl -k -SL -O https://detect.blackduck.com/detect10.sh && chmod +x detect10.sh
                             
-			    ./detect10.sh \
-                                --blackduck.url="https://192.168.12.204" \
-                                --blackduck.api.token="\$BLACKDUCK_API_TOKEN" \
-                                --blackduck.trust.cert=true \
-                                --detect.project.name="${SEEKER_PROJECT_KEY}" \
-                                --detect.project.version.name="latest" \
-                                --detect.binary.scan.file.path="${webgoatJar}" \
-                                --detect.tools=DETECTOR,SIGNATURE_SCAN,BINARY_SCAN                        """
+                            ./detect10.sh \\
+                                --blackduck.url="https://192.168.12.204" \\
+                                --blackduck.api.token="\$BLACKDUCK_API_TOKEN" \\
+                                --blackduck.trust.cert=true \\
+                                --detect.project.name="${SEEKER_PROJECT_KEY}" \\
+                                --detect.project.version.name="latest" \\
+                                --detect.binary.scan.file.path="${webgoatJar}" \\
+                                --detect.tools=DETECTOR,SIGNATURE_SCAN,BINARY_SCAN
+                        """
                     }
                 }
             }
         }
-        stage('3. Setup Seeker Agent') {
+
+        // ==========================================
+        // STAGE MỚI BỔ SUNG: QUÉT DOCKER IMAGE
+        // ==========================================
+        stage('3. Build & Scan Docker Image') {
+            steps {
+                script {
+                    echo "[Docker] Building Docker Image for WebGoat..."
+                    
+                    def webgoatJar = sh(script: 'find . -type f -name "webgoat-*.jar" | grep -v "original" | grep -v "webwolf" | grep -v "deploy_prod" | head -n 1', returnStdout: true).trim()
+                    if (!webgoatJar) error "❌ ERROR: No JAR file found for Docker Build!"
+
+                    // 1. Tạo file Dockerfile cơ bản và Build Image (yêu cầu Jenkins agent cài sẵn Docker)
+                    sh """
+                        echo "FROM eclipse-temurin:17-jre-alpine" > Dockerfile
+                        echo "COPY ${webgoatJar} /app/webgoat.jar" >> Dockerfile
+                        echo "EXPOSE 8080" >> Dockerfile
+                        echo "ENTRYPOINT [\\"java\\", \\"-jar\\", \\"/app/webgoat.jar\\"]" >> Dockerfile
+                        
+                        docker build -t webgoat-docker-demo:latest .
+                    """
+
+                    echo "[Docker Scan] Running Black Duck Docker Scan..."
+                    
+                    // 2. Tái sử dụng script detect10.sh để quét Docker image vừa tạo
+                    withCredentials([string(credentialsId: 'blackduck-api-token', variable: 'BLACKDUCK_API_TOKEN')]) {
+                        sh """
+                            ./detect10.sh \\
+                                --blackduck.url="https://192.168.12.204" \\
+                                --blackduck.api.token="\$BLACKDUCK_API_TOKEN" \\
+                                --blackduck.trust.cert=true \\
+                                --detect.project.name="${SEEKER_PROJECT_KEY}-docker" \\
+                                --detect.project.version.name="latest" \\
+                                --detect.docker.image="webgoat-docker-demo:latest" \\
+                                --detect.tools=DOCKER
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('4. Setup Seeker Agent') {
             steps {
                 script {
                     withCredentials([string(credentialsId: 'seeker-agent-token', variable: 'SEEKER_AGENT_TOKEN')]) {
@@ -80,7 +121,7 @@ pipeline {
             }
         }
 
-        stage('4. Run App with Seeker (Test)') {
+        stage('5. Run App with Seeker (Test)') {
             steps {
                 script {
                     echo " [Run] Starting latest WebGoat (Test Mode on Port ${TEST_PORT})..."
@@ -89,7 +130,6 @@ pipeline {
                     def webgoatJar = sh(script: 'find . -type f -name "webgoat-*.jar" | grep -v "original" | grep -v "webwolf" | head -n 1', returnStdout: true).trim()
                   
                     if (!webgoatJar) error "❌ ERROR: No JAR file found!"
-                    
                     sh """
                         echo ">>> Cleaning up ports ${TEST_PORT} and ${WOLF_TEST_PORT}..."
                         fuser -k ${TEST_PORT}/tcp || true
@@ -100,18 +140,18 @@ pipeline {
                     withCredentials([string(credentialsId: 'seeker-agent-token', variable: 'SEEKER_ACCESS_TOKEN')]) {
                         sh """
                             export SEEKER_ACCESS_TOKEN=${SEEKER_ACCESS_TOKEN}
-                            nohup java \
-                                -Dfile.encoding=UTF-8 \
-                                -Duser.timezone=${TZ} \
-                                --add-opens java.base/java.lang=ALL-UNNAMED \
-                                -Xmx2g \
-                                -javaagent:${WORKSPACE}/seeker/seeker-agent.jar \
-                                -Dseeker.server.url=${SEEKER_SERVER_URL} \
-                                -Dseeker.project.key=${SEEKER_PROJECT_KEY} \
-                                -jar ${webgoatJar} \
-                                --server.address=0.0.0.0 \
-                                --webgoat.port=${TEST_PORT} \
-                                --webwolf.port=${WOLF_TEST_PORT} \
+                            nohup java \\
+                                -Dfile.encoding=UTF-8 \\
+                                -Duser.timezone=${TZ} \\
+                                --add-opens java.base/java.lang=ALL-UNNAMED \\
+                                -Xmx2g \\
+                                -javaagent:${WORKSPACE}/seeker/seeker-agent.jar \\
+                                -Dseeker.server.url=${SEEKER_SERVER_URL} \\
+                                -Dseeker.project.key=${SEEKER_PROJECT_KEY} \\
+                                -jar ${webgoatJar} \\
+                                --server.address=0.0.0.0 \\
+                                --webgoat.port=${TEST_PORT} \\
+                                --webwolf.port=${WOLF_TEST_PORT} \\
                                 > app_webgoat_test.log 2>&1 < /dev/null &
                         """
                     }
@@ -119,7 +159,7 @@ pipeline {
             }
         }
 
-        stage('5. Health Check & Traffic') {
+        stage('6. Health Check & Traffic') {
             steps {
                 script {
                     echo "[Check] Waiting for Services (Custom Loop)..."
@@ -182,7 +222,7 @@ pipeline {
             }
         }
 
-        stage('6. Quality Gate') {
+        stage('7. Quality Gate') {
             steps {
                 script {
                     echo "[Gate] Checking Seeker Compliance..."
@@ -216,7 +256,7 @@ pipeline {
                                 if (jsonResult.containsKey('content')) vulnList = jsonResult.content
                                 else if (jsonResult.containsKey('vulnerabilities')) vulnList = jsonResult.vulnerabilities
                                 else if (jsonResult.containsKey('code') && jsonResult.code != 200) {
-                                     error "API Error: ${jsonResult.message}"
+                                    error "API Error: ${jsonResult.message}"
                                 }
                             }
 
@@ -259,7 +299,7 @@ pipeline {
             }
         }
 
-        stage('7. Deploy to Production') {
+        stage('8. Deploy to Production') {
             steps {
                 script {
                     echo "[Deploy] Deploying latest WebGoat to Production on Port ${PROD_PORT}..."
@@ -296,7 +336,7 @@ pipeline {
                         sh """
                             export SEEKER_ACCESS_TOKEN=${SEEKER_ACCESS_TOKEN}
                             echo "Starting WebGoat & WebWolf (Prod)..."
-                            
+                          
                             nohup java -Xmx2g \\
                                 -Dfile.encoding=UTF-8 \\
                                 -Duser.timezone=${TZ} \\
@@ -317,7 +357,7 @@ pipeline {
                     // 2. Đợi Server lên (Health Check cho cả 2)
                     echo "Waiting for WebGoat & WebWolf to initialize..."
                     boolean prodReady = false
-                    
+          
                     for (int i = 1; i <= 60; i++) {
                         def gStatus = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${PROD_PORT}/WebGoat/login || echo '000'", returnStdout: true).trim()
                         def wStatus = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${WOLF_PROD_PORT}/WebWolf/login || echo '000'", returnStdout: true).trim()
@@ -342,14 +382,14 @@ pipeline {
                         error "Deployment Failed: Production server did not start properly."
                     }
                     echo "Deployment Process Finished!"
-                } // Đóng script của Stage 7
-            } // Đóng steps của Stage 7
-        } // Đóng Stage 7
-    } // Đóng khối stages
+                } 
+            } 
+        } 
+    } 
 
     post {
         always {
              archiveArtifacts artifacts: '*.log', allowEmptyArchive: true
         }
     }
-} // Đóng khối pipeline
+}
