@@ -66,42 +66,38 @@ pipeline {
 
 	stage('3. Build & Scan Docker Image') {
             steps {
-                script {
-                    echo "[Docker] Building Docker Image for WebGoat..."
-                    
-                    def webgoatJar = sh(script: 'find . -type f -name "webgoat-*.jar" | grep -v "original" | grep -v "webwolf" | grep -v "deploy_prod" | head -n 1', returnStdout: true).trim()
-                    if (!webgoatJar) error "❌ ERROR: No JAR file found for Docker Build!"
-                    
-//		    # 1. Tạo file Dockerfile cơ bản, Build Image và LƯU RA FILE TAR
-sh """
-    echo "FROM eclipse-temurin:17-jre-alpine" > Dockerfile
-    echo "COPY ${webgoatJar} /app/webgoat.jar" >> Dockerfile
-    echo "EXPOSE 8080" >> Dockerfile
-    echo "ENTRYPOINT [\\"java\\", \\"-jar\\", \\"/app/webgoat.jar\\"]" >> Dockerfile
+		script {
+    echo "[Docker] Building Docker Image for WebGoat..."
     
-    docker build -t webgoat-docker-demo:latest .
+    def webgoatJar = sh(script: 'find . -type f -name "webgoat-*.jar" | grep -v "original" | grep -v "webwolf" | grep -v "deploy_prod" | head -n 1', returnStdout: true).trim()
+    if (!webgoatJar) error "❌ ERROR: No JAR file found for Docker Build!"
     
-    docker save -o webgoat-docker.tar webgoat-docker-demo:latest
+    // 1. Tạo file Dockerfile cơ bản và Build Image (Removed docker save)
+    sh """
+        echo "FROM eclipse-temurin:17-jre-alpine" > Dockerfile
+        echo "COPY ${webgoatJar} /app/webgoat.jar" >> Dockerfile
+        echo "EXPOSE 8080" >> Dockerfile
+        echo "ENTRYPOINT [\\"java\\", \\"-jar\\", \\"/app/webgoat.jar\\"]" >> Dockerfile
+        
+        docker build -t webgoat-docker-demo:latest .
+    """
     
-    # THÊM DÒNG NÀY ĐỂ CẤP QUYỀN CHO BLACK DUCK ĐỌC FILE
-    chmod 777 webgoat-docker.tar
-"""
-                    echo "[Docker Scan] Running Black Duck Docker Scan..."
-                    
-                    // 2. Tái sử dụng script detect10.sh để quét file tar vừa tạo
-                    withCredentials([string(credentialsId: 'blackduck-api-token', variable: 'BLACKDUCK_API_TOKEN')]) {
-                        sh """
-                            ./detect10.sh \\
-                                --blackduck.url="https://192.168.12.204" \\
-                                --blackduck.api.token="\$BLACKDUCK_API_TOKEN" \\
-                                --blackduck.trust.cert=true \\
-                                --detect.project.name="${SEEKER_PROJECT_KEY}-docker" \\
-                                --detect.project.version.name="latest" \\
-                                --detect.docker.tar="webgoat-docker.tar" \\
-                                --detect.tools=DOCKER
-                        """
-                    }
-                }
+    echo "[Docker Scan] Running Black Duck Docker Scan directly on the daemon image..."
+    
+    // 2. Chạy quét trực tiếp trên image
+    withCredentials([string(credentialsId: 'blackduck-api-token', variable: 'BLACKDUCK_API_TOKEN')]) {
+        sh """
+            ./detect10.sh \\
+                --blackduck.url="https://192.168.12.204" \\
+                --blackduck.api.token="\$BLACKDUCK_API_TOKEN" \\
+                --blackduck.trust.cert=true \\
+                --detect.project.name="${SEEKER_PROJECT_KEY}-docker" \\
+                --detect.project.version.name="latest" \\
+                --detect.docker.image="webgoat-docker-demo:latest" \\
+                --detect.tools=DOCKER
+        """
+    }
+}
             }
         }
         stage('4. Setup Seeker Agent') {
