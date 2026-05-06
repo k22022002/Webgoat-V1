@@ -73,6 +73,7 @@ pipeline {
     if (!webgoatJar) error "❌ ERROR: No JAR file found for Docker Build!"
     
     // 1. Tạo file Dockerfile cơ bản và Build Image (Removed docker save)
+	// 1. Build Image (Vẫn giữ BuildKit mặc định) và LƯU RA FILE TAR
     sh """
         echo "FROM eclipse-temurin:17-jre-alpine" > Dockerfile
         echo "COPY ${webgoatJar} /app/webgoat.jar" >> Dockerfile
@@ -80,11 +81,13 @@ pipeline {
         echo "ENTRYPOINT [\\"java\\", \\"-jar\\", \\"/app/webgoat.jar\\"]" >> Dockerfile
         
         docker build -t webgoat-docker-demo:latest .
+        
+        # Bắt buộc phải xuất ra file tar cho công cụ quét mới
+        docker save -o webgoat-docker.tar webgoat-docker-demo:latest
+        chmod 777 webgoat-docker.tar
     """
     
-    echo "[Docker Scan] Running Black Duck Docker Scan directly on the daemon image..."
-    
-    // 2. Chạy quét trực tiếp trên image
+    // 2. Chạy quét bằng công cụ CONTAINER_SCAN thay vì DOCKER
     withCredentials([string(credentialsId: 'blackduck-api-token', variable: 'BLACKDUCK_API_TOKEN')]) {
         sh """
             ./detect10.sh \\
@@ -93,8 +96,8 @@ pipeline {
                 --blackduck.trust.cert=true \\
                 --detect.project.name="${SEEKER_PROJECT_KEY}-docker" \\
                 --detect.project.version.name="latest" \\
-                --detect.docker.image="webgoat-docker-demo:latest" \\
-                --detect.tools=DOCKER
+                --detect.container.scan.file.path="webgoat-docker.tar" \\
+                --detect.tools=CONTAINER_SCAN
         """
     }
 }
