@@ -72,7 +72,7 @@ pipeline {
                     def webgoatJar = sh(script: 'find . -type f -name "webgoat-*.jar" | grep -v "original" | grep -v "webwolf" | grep -v "deploy_prod" | head -n 1', returnStdout: true).trim()
                     if (!webgoatJar) error "❌ ERROR: No JAR file found for Docker Build!"
                     
-		    # 1. Tạo file Dockerfile cơ bản, Build Image và LƯU RA FILE TAR
+//		    # 1. Tạo file Dockerfile cơ bản, Build Image và LƯU RA FILE TAR
 sh """
     echo "FROM eclipse-temurin:17-jre-alpine" > Dockerfile
     echo "COPY ${webgoatJar} /app/webgoat.jar" >> Dockerfile
