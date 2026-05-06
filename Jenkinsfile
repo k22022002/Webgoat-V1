@@ -9,7 +9,7 @@ pipeline {
     environment {
         TEST_PORT = "9595"
         WOLF_TEST_PORT = "9096" 
-        PROD_PORT = "8090"
+        PROD_PORT = "8099"
         WOLF_PROD_PORT = "9092"
         
         SEEKER_SERVER_URL  = "http://192.168.12.190:8082"
