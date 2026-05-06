@@ -72,19 +72,20 @@ pipeline {
                     def webgoatJar = sh(script: 'find . -type f -name "webgoat-*.jar" | grep -v "original" | grep -v "webwolf" | grep -v "deploy_prod" | head -n 1', returnStdout: true).trim()
                     if (!webgoatJar) error "❌ ERROR: No JAR file found for Docker Build!"
                     
-                    // 1. Tạo file Dockerfile cơ bản, Build Image và LƯU RA FILE TAR
-                    sh """
-                        echo "FROM eclipse-temurin:17-jre-alpine" > Dockerfile
-                        echo "COPY ${webgoatJar} /app/webgoat.jar" >> Dockerfile
-                        echo "EXPOSE 8080" >> Dockerfile
-                        echo "ENTRYPOINT [\\"java\\", \\"-jar\\", \\"/app/webgoat.jar\\"]" >> Dockerfile
-                        
-                        docker build -t webgoat-docker-demo:latest .
-                        
-                        # Thêm dòng này để xuất image ra file tar
-                        docker save -o webgoat-docker.tar webgoat-docker-demo:latest
-                    """
-
+		    # 1. Tạo file Dockerfile cơ bản, Build Image và LƯU RA FILE TAR
+sh """
+    echo "FROM eclipse-temurin:17-jre-alpine" > Dockerfile
+    echo "COPY ${webgoatJar} /app/webgoat.jar" >> Dockerfile
+    echo "EXPOSE 8080" >> Dockerfile
+    echo "ENTRYPOINT [\\"java\\", \\"-jar\\", \\"/app/webgoat.jar\\"]" >> Dockerfile
+    
+    docker build -t webgoat-docker-demo:latest .
+    
+    docker save -o webgoat-docker.tar webgoat-docker-demo:latest
+    
+    # THÊM DÒNG NÀY ĐỂ CẤP QUYỀN CHO BLACK DUCK ĐỌC FILE
+    chmod 777 webgoat-docker.tar
+"""
                     echo "[Docker Scan] Running Black Duck Docker Scan..."
                     
                     // 2. Tái sử dụng script detect10.sh để quét file tar vừa tạo
