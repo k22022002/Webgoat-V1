@@ -64,18 +64,15 @@ pipeline {
             }
         }
 
-        // ==========================================
-        // STAGE MỚI BỔ SUNG: QUÉT DOCKER IMAGE
-        // ==========================================
-        stage('3. Build & Scan Docker Image') {
+	stage('3. Build & Scan Docker Image') {
             steps {
                 script {
                     echo "[Docker] Building Docker Image for WebGoat..."
                     
                     def webgoatJar = sh(script: 'find . -type f -name "webgoat-*.jar" | grep -v "original" | grep -v "webwolf" | grep -v "deploy_prod" | head -n 1', returnStdout: true).trim()
                     if (!webgoatJar) error "❌ ERROR: No JAR file found for Docker Build!"
-
-                    // 1. Tạo file Dockerfile cơ bản và Build Image (yêu cầu Jenkins agent cài sẵn Docker)
+                    
+                    // 1. Tạo file Dockerfile cơ bản, Build Image và LƯU RA FILE TAR
                     sh """
                         echo "FROM eclipse-temurin:17-jre-alpine" > Dockerfile
                         echo "COPY ${webgoatJar} /app/webgoat.jar" >> Dockerfile
@@ -83,11 +80,14 @@ pipeline {
                         echo "ENTRYPOINT [\\"java\\", \\"-jar\\", \\"/app/webgoat.jar\\"]" >> Dockerfile
                         
                         docker build -t webgoat-docker-demo:latest .
+                        
+                        # Thêm dòng này để xuất image ra file tar
+                        docker save -o webgoat-docker.tar webgoat-docker-demo:latest
                     """
 
                     echo "[Docker Scan] Running Black Duck Docker Scan..."
                     
-                    // 2. Tái sử dụng script detect10.sh để quét Docker image vừa tạo
+                    // 2. Tái sử dụng script detect10.sh để quét file tar vừa tạo
                     withCredentials([string(credentialsId: 'blackduck-api-token', variable: 'BLACKDUCK_API_TOKEN')]) {
                         sh """
                             ./detect10.sh \\
@@ -96,14 +96,13 @@ pipeline {
                                 --blackduck.trust.cert=true \\
                                 --detect.project.name="${SEEKER_PROJECT_KEY}-docker" \\
                                 --detect.project.version.name="latest" \\
-                                --detect.docker.image="webgoat-docker-demo:latest" \\
+                                --detect.docker.tar="webgoat-docker.tar" \\
                                 --detect.tools=DOCKER
                         """
                     }
                 }
             }
         }
-
         stage('4. Setup Seeker Agent') {
             steps {
                 script {
