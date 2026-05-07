@@ -1,6 +1,8 @@
 pipeline {
     agent any
-
+    parameters {
+        booleanParam(name: 'FORCE_COVERITY', defaultValue: false, description: 'Tích vào đây nếu muốn chạy quét Coverity Full Scan') 
+    }
     tools {
         jdk 'JDK 25' 
         maven 'Maven3.9.11' 
@@ -63,7 +65,49 @@ pipeline {
                 }
             }
         }
+	stage('SAST (Coverity)') { 
+            when {
+                anyOf {
+                    triggeredBy 'TimerTrigger' 
+                    expression { return params.FORCE_COVERITY == true }
+                }
+            }
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'coverity-credentials', usernameVariable: 'COV_USER', passwordVariable: 'COV_PASS')]) { // [cite: 23]
+                    script {
+                        echo '--- [Step] Synopsys Coverity SAST ---' 
+                        def buildVer = "1.0.${env.BUILD_NUMBER}" 
+                        def covStream = "webgoat-stream" // Thay đổi tên stream cho WebGoat (gốc là juice-shop-stream) 
+                        def covBin = "/home/ubuntu/cov-analysis-linux64-2025.9.2/bin" 
+                        def covUrl = "http://192.168.12.190:8081" 
 
+                        // Cấu hình Coverity cho Java thay vì --javascript --typescript như Juice Shop [cite: 24, 25]
+                        sh "${covBin}/cov-configure --java || true" 
+                        sh "rm -rf idir" 
+                        
+                        // Dùng cov-build để bọc quá trình build Maven của WebGoat thay vì coverity capture
+                        sh "chmod +x mvnw" // 
+                        sh "${covBin}/cov-build --dir idir ./mvnw clean install -DskipTests -Dmaven.test.skip=true -Dprocess-exec.skip=true" 
+                        
+                        sh "${covBin}/cov-analyze --dir idir --all --webapp-security --strip-path \$(pwd)" 
+
+                        sh """
+                            ${covBin}/cov-commit-defects --dir idir \
+                            --url ${covUrl} \
+                            --stream ${covStream} \
+                            --user \$COV_USER --password \$COV_PASS \
+                            --version "${buildVer}" \
+                            --description "WebGoat Build ${env.BUILD_NUMBER}" 
+                        """ 
+                        
+                        sh "${covBin}/cov-format-errors --dir idir --html-output coverity-report" 
+                        sh "${covBin}/cov-format-errors --dir idir --json-output-v7 coverity_results.json" 
+                        def defectCount = sh(script: "jq '.issues | length' coverity_results.json", returnStdout: true).trim().toInteger() 
+                        echo "Coverity found: ${defectCount} defects" 
+                    }
+                }
+            }
+        }
 	stage('3. Build & Scan Docker Image') {
             steps {
 		script {
