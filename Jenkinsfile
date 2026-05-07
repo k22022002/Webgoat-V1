@@ -79,7 +79,7 @@ pipeline {
                         def buildVer = "1.0.${env.BUILD_NUMBER}"
                         def covStream = "webgoat-stream" 
                         def covBin = "/home/ubuntu/cov-analysis-linux64-2025.9.2/bin"
-                        def covUrl = "http://192.168.12.190:8081"
+                        def covUrl = "http://192.168.12.191:8081"
 
                         // Dọn dẹp thư mục cũ
                         sh "rm -rf idir"
