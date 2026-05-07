@@ -81,21 +81,16 @@ pipeline {
                         def covBin = "/home/ubuntu/cov-analysis-linux64-2025.9.2/bin"
                         def covUrl = "http://192.168.12.190:8081"
 
-                        // 1. Dọn dẹp thư mục cũ và tạo thư mục chứa config cục bộ
-                        sh "rm -rf idir cov-config"
-                        sh "mkdir -p cov-config"
-
-                        // 2. Chạy cấu hình Java và trỏ file config vào thư mục vừa tạo (Bỏ || true để bắt lỗi chính xác nếu có)
-                        sh "${covBin}/cov-configure --config cov-config/coverity_config.xml --java" 
+                        // Dọn dẹp thư mục cũ
+                        sh "rm -rf idir"
                         
-                        // 3. Build dự án thông qua cov-build, nhớ trỏ tới file config cục bộ
-                        sh "chmod +x mvnw"
-                        sh "${covBin}/cov-build --config cov-config/coverity_config.xml --dir idir ./mvnw clean install -DskipTests -Dmaven.test.skip=true -Dprocess-exec.skip=true"
+                        // Sử dụng CLI mới tự động nhận diện và capture dự án Maven
+                        sh "${covBin}/coverity capture --project-dir . --dir idir"
                         
-                        // 4. Phân tích mã nguồn
+                        // Phân tích mã nguồn
                         sh "${covBin}/cov-analyze --dir idir --all --webapp-security --strip-path \$(pwd)"
 
-                        // 5. Đẩy kết quả lên Coverity Connect Server
+                        // Commit kết quả lên Coverity Server
                         sh """
                             ${covBin}/cov-commit-defects --dir idir \
                             --url ${covUrl} \
@@ -105,11 +100,10 @@ pipeline {
                             --description "WebGoat Build ${env.BUILD_NUMBER}" 
                         """
                         
-                        // 6. Định dạng xuất lỗi ra HTML và JSON
+                        // Xuất báo cáo
                         sh "${covBin}/cov-format-errors --dir idir --html-output coverity-report"
                         sh "${covBin}/cov-format-errors --dir idir --json-output-v7 coverity_results.json"
                         
-                        // 7. Đếm số lượng lỗ hổng tìm được
                         def defectCount = sh(script: "jq '.issues | length' coverity_results.json", returnStdout: true).trim().toInteger()
                         echo "Coverity found: ${defectCount} defects"
                     }
