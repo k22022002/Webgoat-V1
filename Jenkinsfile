@@ -74,23 +74,28 @@ pipeline {
             }
             steps {
                 withCredentials([usernamePassword(credentialsId: 'coverity-credentials', usernameVariable: 'COV_USER', passwordVariable: 'COV_PASS')]) { // [cite: 23]
-                    script {
-                        echo '--- [Step] Synopsys Coverity SAST ---' 
-                        def buildVer = "1.0.${env.BUILD_NUMBER}" 
-                        def covStream = "webgoat-stream" // Thay đổi tên stream cho WebGoat (gốc là juice-shop-stream) 
-                        def covBin = "/home/ubuntu/cov-analysis-linux64-2025.9.2/bin" 
-                        def covUrl = "http://192.168.12.190:8081" 
+		script {
+                        echo '--- [Step] Synopsys Coverity SAST ---'
+                        def buildVer = "1.0.${env.BUILD_NUMBER}"
+                        def covStream = "webgoat-stream" 
+                        def covBin = "/home/ubuntu/cov-analysis-linux64-2025.9.2/bin"
+                        def covUrl = "http://192.168.12.190:8081"
 
-                        // Cấu hình Coverity cho Java thay vì --javascript --typescript như Juice Shop [cite: 24, 25]
-                        sh "${covBin}/cov-configure --java || true" 
-                        sh "rm -rf idir" 
-                        
-                        // Dùng cov-build để bọc quá trình build Maven của WebGoat thay vì coverity capture
-                        sh "chmod +x mvnw" // 
-                        sh "${covBin}/cov-build --dir idir ./mvnw clean install -DskipTests -Dmaven.test.skip=true -Dprocess-exec.skip=true" 
-                        
-                        sh "${covBin}/cov-analyze --dir idir --all --webapp-security --strip-path \$(pwd)" 
+                        // 1. Dọn dẹp thư mục cũ và tạo thư mục chứa config cục bộ
+                        sh "rm -rf idir cov-config"
+                        sh "mkdir -p cov-config"
 
+                        // 2. Chạy cấu hình Java và trỏ file config vào thư mục vừa tạo (Bỏ || true để bắt lỗi chính xác nếu có)
+                        sh "${covBin}/cov-configure --config cov-config/coverity_config.xml --java" 
+                        
+                        // 3. Build dự án thông qua cov-build, nhớ trỏ tới file config cục bộ
+                        sh "chmod +x mvnw"
+                        sh "${covBin}/cov-build --config cov-config/coverity_config.xml --dir idir ./mvnw clean install -DskipTests -Dmaven.test.skip=true -Dprocess-exec.skip=true"
+                        
+                        // 4. Phân tích mã nguồn
+                        sh "${covBin}/cov-analyze --dir idir --all --webapp-security --strip-path \$(pwd)"
+
+                        // 5. Đẩy kết quả lên Coverity Connect Server
                         sh """
                             ${covBin}/cov-commit-defects --dir idir \
                             --url ${covUrl} \
@@ -98,12 +103,15 @@ pipeline {
                             --user \$COV_USER --password \$COV_PASS \
                             --version "${buildVer}" \
                             --description "WebGoat Build ${env.BUILD_NUMBER}" 
-                        """ 
+                        """
                         
-                        sh "${covBin}/cov-format-errors --dir idir --html-output coverity-report" 
-                        sh "${covBin}/cov-format-errors --dir idir --json-output-v7 coverity_results.json" 
-                        def defectCount = sh(script: "jq '.issues | length' coverity_results.json", returnStdout: true).trim().toInteger() 
-                        echo "Coverity found: ${defectCount} defects" 
+                        // 6. Định dạng xuất lỗi ra HTML và JSON
+                        sh "${covBin}/cov-format-errors --dir idir --html-output coverity-report"
+                        sh "${covBin}/cov-format-errors --dir idir --json-output-v7 coverity_results.json"
+                        
+                        // 7. Đếm số lượng lỗ hổng tìm được
+                        def defectCount = sh(script: "jq '.issues | length' coverity_results.json", returnStdout: true).trim().toInteger()
+                        echo "Coverity found: ${defectCount} defects"
                     }
                 }
             }
