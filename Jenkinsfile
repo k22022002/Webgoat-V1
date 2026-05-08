@@ -103,6 +103,7 @@ pipeline {
                         """
                         
                         // Xuất báo cáo
+			sh "rm -rf coverity-report coverity_results.json"
                         sh "${covBin}/cov-format-errors --dir idir --html-output coverity-report"
                         sh "${covBin}/cov-format-errors --dir idir --json-output-v7 coverity_results.json"
                         
