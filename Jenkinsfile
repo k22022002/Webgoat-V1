@@ -18,10 +18,12 @@ pipeline {
         SEEKER_PROJECT_KEY = "webgoat-2025-demo"
      
         JENKINS_NODE_COOKIE = "dontKillMe"
-        
         TZ = "Asia/Ho_Chi_Minh"
-    }
 
+        // --- Thêm biến cho SRM ---
+        SRM_SERVER_URL = "http://192.168.12.190:6060"
+        SRM_PROJECT_ID = "1" 
+    }
     stages {
         stage('1. Build Application') {
             steps {
@@ -343,8 +345,85 @@ pipeline {
                 }
             }
         }
+	stage('8. Push Data to SRM') {
+            steps {
+                script {
+                    echo "[SRM] Đóng gói source code và đẩy kết quả lên SRM..."
+                    
+                    // 1. Nén mã nguồn (Rất quan trọng để SRM map lỗi với dòng code)
+                    // Bỏ qua các file build/binaries không cần thiết để tối ưu thời gian upload
+                    sh "zip -rq source_code.zip . -x '*.git*' '*idir*' '*target*' '*deploy_prod*' '*.jar' '*.tar'"
+                    
+                    withCredentials([string(credentialsId: 'srm-api-token', variable: 'SRM_API_TOKEN')]) {
+                        // 2. Kiểm tra xem có file kết quả Coverity không để đính kèm
+                        def covParam = fileExists('coverity_results.json') ? '-F "file=@coverity_results.json"' : ''
+                        
+                        echo ">>> Gửi dữ liệu tới SRM (Project ID: ${SRM_PROJECT_ID})..."
+                        
+                        // 3. Gọi API tạo luồng phân tích mới
+                        sh """
+                            curl -k -s -X POST "${SRM_SERVER_URL}/srm/api/projects/${SRM_PROJECT_ID}/analysis" \\
+                                -H "accept: application/json" \\
+                                -H "Authorization: Bearer \$SRM_API_TOKEN" \\
+                                -F "file=@source_code.zip" \\
+                                ${covParam}
+                        """
+                        echo "✅ Đã đẩy dữ liệu thành công lên SRM!"
+                    }
+                }
+            }
+        )
+	stage('9. SRM Quality Gate') {
+            steps {
+                script {
+                    echo "[Gate] Đang chờ SRM hoàn tất phân tích và kiểm tra Quality Gate..."
+                    
+                    // Thời gian chờ tối đa (ví dụ: 5 phút = 300 giây)
+                    sleep 30 // Chờ khởi động luồng phân tích
+                    
+                    int maxCritical = 0 // Không chấp nhận bất kỳ lỗi Critical nào
+                    int maxHigh = 10    // Chấp nhận tối đa 10 lỗi High
+                    
+                    withCredentials([string(credentialsId: 'srm-api-token', variable: 'SRM_API_TOKEN')]) {
+                        // 1. Lấy dữ liệu Findings từ SRM (Lọc theo mức độ Critical và High)
+                        // Lưu ý: Endpoint này áp dụng cho các bản SRM/Code Dx tiêu chuẩn.
+                        def apiUrl = "${SRM_SERVER_URL}/srm/api/projects/${SRM_PROJECT_ID}/findings/count?severities=Critical,High"
+                        
+                        try {
+                            def response = sh(
+                                script: """curl -s -k -X GET "${apiUrl}" \\
+                                    -H "accept: application/json" \\
+                                    -H "Authorization: Bearer \$SRM_API_TOKEN" """,
+                                returnStdout: true
+                            ).trim()
 
-        stage('8. Deploy to Production') {
+                            echo "Raw SRM Response: ${response}"
+                            
+                            // Phân tích JSON trả về (Giả định SRM trả về Map có chứa số lượng theo severity)
+                            def jsonResult = new groovy.json.JsonSlurper().parseText(response)
+                            
+                            int criticalCount = jsonResult.severities?.Critical ?: 0
+                            int highCount = jsonResult.severities?.High ?: 0
+                            
+                            echo "📊 SRM Report Summary (Gộp từ tất cả các tool):"
+                            echo "   - Critical: ${criticalCount} / Allowed: ${maxCritical}"
+                            echo "   - High:     ${highCount} / Allowed: ${maxHigh}"
+
+                            if (criticalCount > maxCritical || highCount > maxHigh) {
+                                error "❌ Quality Gate FAILED: Tổng số lỗi vượt quá ngưỡng cho phép (Critical: ${criticalCount}, High: ${highCount}). Vui lòng kiểm tra SRM UI để xem chi tiết."
+                            } else {
+                                echo "✅ Quality Gate PASSED. Code đủ an toàn để đi tiếp!"
+                            }
+
+                        } catch (Exception e) {
+                            echo "⚠️ Lỗi khi gọi API của SRM: ${e.getMessage()}"
+                            error "Quality Gate bị gián đoạn do không thể kết nối tới SRM."
+                        }
+                    }
+                }
+            }
+        }
+        stage('10. Deploy to Production') {
             steps {
                 script {
                     echo "[Deploy] Deploying latest WebGoat to Production on Port ${PROD_PORT}..."
