@@ -349,27 +349,33 @@ pipeline {
 	stage('8. Push Data to SRM') {
             steps {
                 script {
-                    echo "[SRM] Đóng gói source code và đẩy kết quả lên SRM..."
+                    echo "[SRM] Đóng gói source code và kết quả quét (nếu có)..."
                     
-                    // 1. Nén mã nguồn (Rất quan trọng để SRM map lỗi với dòng code)
-                    // Bỏ qua các file build/binaries không cần thiết để tối ưu thời gian upload
+                    // Nén toàn bộ mã nguồn VÀ các file kết quả quét vào chung 1 file zip
                     sh "zip -rq source_code.zip . -x '*.git*' '*idir*' '*target*' '*deploy_prod*' '*.jar' '*.tar'"
                     
                     withCredentials([string(credentialsId: 'srm-api-token', variable: 'SRM_API_TOKEN')]) {
-                        // 2. Kiểm tra xem có file kết quả Coverity không để đính kèm
-                        def covParam = fileExists('coverity_results.json') ? '-F "file=@coverity_results.json"' : ''
-                        
                         echo ">>> Gửi dữ liệu tới SRM (Project ID: ${SRM_PROJECT_ID})..."
                         
-                        // 3. Gọi API tạo luồng phân tích mới
-                        sh """
-                            curl -k -s -X POST "${SRM_SERVER_URL}/srm/api/projects/${SRM_PROJECT_ID}/analysis" \\
-                                -H "accept: application/json" \\
-                                -H "Authorization: Bearer \$SRM_API_TOKEN" \\
-                                -F "file=@source_code.zip" \\
-                                ${covParam}
-                        """
-                        echo "✅ Đã đẩy dữ liệu thành công lên SRM!"
+                        // Gọi API tải duy nhất file zip lên. SRM sẽ tự động bóc tách bên trong.
+                        def srmResponse = sh(
+                            script: """
+                                curl -k -s -X POST "${SRM_SERVER_URL}/srm/api/projects/${SRM_PROJECT_ID}/analysis" \\
+                                    -H "accept: application/json" \\
+                                    -H "Authorization: Bearer \$SRM_API_TOKEN" \\
+                                    -F "file=@source_code.zip"
+                            """,
+                            returnStdout: true
+                        ).trim()
+                        
+                        // In ra phản hồi thật của SRM để dễ kiểm tra thay vì tự báo thành công
+                        echo "SRM Upload Response: ${srmResponse}"
+                        
+                        if (srmResponse.contains("error")) {
+                            error "❌ SRM Upload Failed: ${srmResponse}"
+                        } else {
+                            echo "✅ Đã đẩy dữ liệu thành công lên SRM!"
+                        }
                     }
                 }
             }
