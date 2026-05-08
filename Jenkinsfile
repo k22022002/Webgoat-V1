@@ -372,7 +372,7 @@ pipeline {
                     }
                 }
             }
-        )
+        }
 	stage('9. SRM Quality Gate') {
             steps {
                 script {
