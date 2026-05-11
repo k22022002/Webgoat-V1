@@ -27,8 +27,7 @@ pipeline {
                 script {
                     echo "[Build] Compiling latest WebGoat..."
                     sh "chmod +x mvnw"
-                    sh "./mvnw clean install -DskipTests -Dmaven.test.skip=true -Dprocess-exec.skip=true"
-                    
+		    sh "./mvnw clean package -DskipTests -Dmaven.test.skip=true -DskipITs -Dprocess.skip=true"                    
                     // Tối ưu: Tìm và lưu đường dẫn JAR 1 lần duy nhất, tái sử dụng cho toàn Pipeline
                     env.WEBGOAT_JAR = sh(script: 'find . -type f -name "webgoat-*.jar" | grep -v "original" | grep -v "webwolf" | grep -v "deploy_prod" | head -n 1', returnStdout: true).trim()
                     if (!env.WEBGOAT_JAR) error "❌ ERROR: No compiled JAR file found!"
