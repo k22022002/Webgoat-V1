@@ -15,7 +15,7 @@ pipeline {
         WOLF_PROD_PORT = "9092"
         
         SEEKER_SERVER_URL  = "http://192.168.12.190:8082"
-        SEEKER_PROJECT_KEY = "webgoat-2025-demo"
+        SEEKER_PROJECT_KEY = "webgoat-2025-demo-v1"
      
         JENKINS_NODE_COOKIE = "dontKillMe"
         TZ = "Asia/Ho_Chi_Minh"
@@ -49,7 +49,7 @@ pipeline {
                                 --blackduck.api.token="\$BLACKDUCK_API_TOKEN" \\
                                 --blackduck.trust.cert=true \\
                                 --detect.project.name="${SEEKER_PROJECT_KEY}" \\
-                                --detect.project.version.name="latest" \\
+				--detect.project.version.name="Build-${env.BUILD_NUMBER}" \
                                 --detect.binary.scan.file.path="${env.WEBGOAT_JAR}" \\
                                 --detect.tools=DETECTOR,SIGNATURE_SCAN,BINARY_SCAN
                         """
@@ -122,7 +122,7 @@ pipeline {
                                 --blackduck.api.token="\$BLACKDUCK_API_TOKEN" \\
                                 --blackduck.trust.cert=true \\
                                 --detect.project.name="${SEEKER_PROJECT_KEY}-docker" \\
-                                --detect.project.version.name="latest" \\
+				--detect.project.version.name="Build-${env.BUILD_NUMBER}" \
                                 --detect.container.scan.file.path="webgoat-docker.tar" \\
                                 --detect.tools=CONTAINER_SCAN
                         """
