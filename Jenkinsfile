@@ -15,7 +15,7 @@ pipeline {
         WOLF_PROD_PORT = "9092"
         
         SEEKER_SERVER_URL  = "http://192.168.12.190:8082"
-        SEEKER_PROJECT_KEY = "webgoat-2025-demo-v1"
+        SEEKER_PROJECT_KEY = "webgoat-2025-demo"
      
         JENKINS_NODE_COOKIE = "dontKillMe"
         TZ = "Asia/Ho_Chi_Minh"
