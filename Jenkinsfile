@@ -19,6 +19,8 @@ pipeline {
      
         JENKINS_NODE_COOKIE = "dontKillMe"
         TZ = "Asia/Ho_Chi_Minh"
+	SRM_SERVER_URL  = "http://192.168.12.190:6060/srm"
+        SRM_PROJECT_ID  = "1"
     }
     
     stages {
@@ -342,6 +344,26 @@ pipeline {
                 } 
             } 
         } 
+	stage('9. Run SRM Analysis & Version Tagging') {
+            steps {
+                script {
+                    echo "[SRM] Đang yêu cầu SRM gom dữ liệu cho phiên bản ${COMMON_VERSION}..."
+                    
+                    withCredentials([string(credentialsId: 'srm-api-token', variable: 'SRM_API_TOKEN')]) {
+                        sh """
+                            # 1. Gọi API để kích hoạt tất cả Tool Connectors trong Project
+                            # (Ra lệnh cho SRM sang Coverity, Black Duck, Seeker kéo dữ liệu mới nhất về)
+                            curl -s -X POST -k \\
+                                -H "Authorization: Bearer \$SRM_API_TOKEN" \\
+                                -H "Accept: application/json" \\
+                                "\${SRM_SERVER_URL}/api/projects/\${SRM_PROJECT_ID}/tool-connectors/run" > /dev/null
+                                
+                            echo "✅ Đã gửi lệnh Trigger thành công! SRM đang xử lý background."
+                        """
+                    }
+                }
+            }
+        }
     } 
 
     post {
