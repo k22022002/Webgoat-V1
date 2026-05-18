@@ -49,7 +49,7 @@ pipeline {
                                 --blackduck.api.token="\$BLACKDUCK_API_TOKEN" \\
                                 --blackduck.trust.cert=true \\
                                 --detect.project.name="${SEEKER_PROJECT_KEY}" \\
-				--detect.project.version.name="${COMMON_VERSION}"
+				--detect.project.version.name="${COMMON_VERSION}" \\
                                 --detect.binary.scan.file.path="${env.WEBGOAT_JAR}" \\
                                 --detect.tools=DETECTOR,SIGNATURE_SCAN,BINARY_SCAN
                         """
@@ -82,7 +82,7 @@ pipeline {
                             --url ${covUrl} \
                             --stream webgoat-stream \
                             --user \$COV_USER --password \$COV_PASS \
-			    --version "${COMMON_VERSION}"
+			    --version "${COMMON_VERSION}" \
                             --description "WebGoat Build ${env.BUILD_NUMBER}" 
                         """
                         
@@ -172,7 +172,7 @@ pipeline {
                                 -javaagent:${WORKSPACE}/seeker/seeker-agent.jar \\
                                 -Dseeker.server.url=${SEEKER_SERVER_URL} \\
                                 -Dseeker.project.key=${SEEKER_PROJECT_KEY} \\
-				-Dseeker.project.version=${COMMON_VERSION} \
+				-Dseeker.project.version=${COMMON_VERSION} \\
                                 -jar ${env.WEBGOAT_JAR} \\
                                 --server.address=0.0.0.0 \\
                                 --webgoat.port=${TEST_PORT} \\
