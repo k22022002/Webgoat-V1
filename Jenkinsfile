@@ -13,7 +13,7 @@ pipeline {
         WOLF_TEST_PORT = "9096" 
         PROD_PORT = "8099"
         WOLF_PROD_PORT = "9092"
-        
+	COMMON_VERSION = "Build-${env.BUILD_NUMBER}"        
         SEEKER_SERVER_URL  = "http://192.168.12.190:8082"
         SEEKER_PROJECT_KEY = "webgoat-2025-demo-v1"
      
@@ -49,7 +49,7 @@ pipeline {
                                 --blackduck.api.token="\$BLACKDUCK_API_TOKEN" \\
                                 --blackduck.trust.cert=true \\
                                 --detect.project.name="${SEEKER_PROJECT_KEY}" \\
-				--detect.project.version.name="Build-${env.BUILD_NUMBER}" \
+				--detect.project.version.name="${COMMON_VERSION}"
                                 --detect.binary.scan.file.path="${env.WEBGOAT_JAR}" \\
                                 --detect.tools=DETECTOR,SIGNATURE_SCAN,BINARY_SCAN
                         """
@@ -69,7 +69,6 @@ pipeline {
                 withCredentials([usernamePassword(credentialsId: 'coverity-credentials', usernameVariable: 'COV_USER', passwordVariable: 'COV_PASS')]) {
                     script {
                         echo '--- [Step] Synopsys Coverity SAST ---'
-                        def buildVer = "1.0.${env.BUILD_NUMBER}"
                         def covBin = "/home/ubuntu/cov-analysis-linux64-2025.9.2/bin"
                         def covUrl = "http://192.168.12.191:8081"
 
@@ -83,7 +82,7 @@ pipeline {
                             --url ${covUrl} \
                             --stream webgoat-stream \
                             --user \$COV_USER --password \$COV_PASS \
-                            --version "${buildVer}" \
+			    --version "${COMMON_VERSION}"
                             --description "WebGoat Build ${env.BUILD_NUMBER}" 
                         """
                         
@@ -173,6 +172,7 @@ pipeline {
                                 -javaagent:${WORKSPACE}/seeker/seeker-agent.jar \\
                                 -Dseeker.server.url=${SEEKER_SERVER_URL} \\
                                 -Dseeker.project.key=${SEEKER_PROJECT_KEY} \\
+				-Dseeker.project.version=${COMMON_VERSION} \
                                 -jar ${env.WEBGOAT_JAR} \\
                                 --server.address=0.0.0.0 \\
                                 --webgoat.port=${TEST_PORT} \\
