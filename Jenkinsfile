@@ -19,8 +19,11 @@ pipeline {
      
         JENKINS_NODE_COOKIE = "dontKillMe"
         TZ = "Asia/Ho_Chi_Minh"
-	SRM_SERVER_URL  = "http://192.168.12.190:6060/srm"
-        SRM_PROJECT_ID  = "1"
+	BRIDGE_SRM_URL = "http://192.168.12.190:6060/srm"
+        BRIDGE_SRM_APIKEY = credentials('srm-apikey')
+        BRIDGE_SRM_PROJECT_NAME = "webgoat-2025-demo"
+        BRIDGE_SRM_BRANCH_NAME = "main" // Có thể thay bằng ${env.BRANCH_NAME} nếu dùng multibranch
+        BRIDGECLI_LINUX64 = "https://repo.blackduck.com/artifactory/bds-integrations-release/com/blackduck/integration/bridge/binaries/bridge-cli-bundle/latest/bridge-cli-bundle-linux64.zip"
     }
     
     stages {
@@ -344,22 +347,21 @@ pipeline {
                 } 
             } 
         } 
-	stage('9. Run SRM Analysis & Version Tagging') {
+	stage('9. SRM Scan') {
             steps {
                 script {
-                    echo "[SRM] Đang yêu cầu SRM gom dữ liệu cho phiên bản ${COMMON_VERSION}..."
+                    status = sh returnStatus: true, script: '''
+                        curl -fLsS -o bridge.zip $BRIDGECLI_LINUX64 && \
+                        unzip -qo -d $WORKSPACE_TMP bridge.zip && \
+                        rm -f bridge.zip
+                        
+                        $WORKSPACE_TMP/bridge-cli-bundle-linux64/bridge-cli --stage srm
+                    '''
                     
-                    withCredentials([string(credentialsId: 'srm-api-token', variable: 'SRM_API_TOKEN')]) {
-                        sh """
-                            # 1. Gọi API để kích hoạt tất cả Tool Connectors trong Project
-                            # (Ra lệnh cho SRM sang Coverity, Black Duck, Seeker kéo dữ liệu mới nhất về)
-                            curl -s -X POST -k \\
-                                -H "Authorization: Bearer \$SRM_API_TOKEN" \\
-                                -H "Accept: application/json" \\
-                                "\${SRM_SERVER_URL}/api/projects/\${SRM_PROJECT_ID}/tool-connectors/run" > /dev/null
-                                
-                            echo "✅ Đã gửi lệnh Trigger thành công! SRM đang xử lý background."
-                        """
+                    if (status == 8) {
+                        unstable 'policy violation'
+                    } else if (status != 0) {
+                        error 'bridge failure'
                     }
                 }
             }
