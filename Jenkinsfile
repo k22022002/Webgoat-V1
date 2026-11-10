@@ -52,7 +52,7 @@ pipeline {
                                 --detect.project.name="webgoat-project" \\
                                 --detect.project.version.name="${COMMON_VERSION}" \\
                                 --detect.binary.scan.file.path="${env.WEBGOAT_JAR}" \\
-                                --detect.tools=DETECTOR,SIGNATURE_SCAN,BINARY_SCAN \\
+                                --detect.tools=DETECTOR,SIGNATURE_SCAN \\
                                 --detect.air.gap.mode=true \\
                                 --detect.air.gap.path=/home/ubuntu/detect-airgap
                         """
