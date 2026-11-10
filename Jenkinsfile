@@ -241,7 +241,7 @@ pipeline {
                         
                         try {
                             def response = sh(
-                                script: 'curl -s -X GET -H "Authorization: \$SEEKER_API_TOKEN" -H "accept: */*" "' + apiUrl + '"',
+                                script: 'curl -s -X GET -H "Authorization: \$SEEKER_API_TOKEN" -H "accept: *//*" "' + apiUrl + '"',
                                 returnStdout: true
                             ).trim()
 
