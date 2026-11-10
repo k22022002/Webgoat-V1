@@ -9,19 +9,19 @@ pipeline {
     }
 
     environment {
-        TEST_PORT = "9595"
-        WOLF_TEST_PORT = "9096" 
-        PROD_PORT = "8099"
-        WOLF_PROD_PORT = "9092"
-        COMMON_VERSION = "Build-${env.BUILD_NUMBER}"        
-        SEEKER_SERVER_URL  = "http://192.168.12.190:8082"
-        SEEKER_PROJECT_KEY = "webgoat-2025-demo-v1"
+        PROD_PORT           = "8099"
+        WOLF_PROD_PORT      = "9092"
+        COMMON_VERSION      = "Build-${env.BUILD_NUMBER}"        
         JENKINS_NODE_COOKIE = "dontKillMe"
-        TZ = "Asia/Ho_Chi_Minh"
+        TZ                  = "Asia/Ho_Chi_Minh"
         
-        // --- CẤU HÌNH SRM CHO CODE DX PLUGIN ---
-        SRM_SERVER_URL  = "http://192.168.12.190:6060/srm"
-        SRM_PROJECT_ID  = "1" // Project ID của bạn
+        // --- CẤU HÌNH BLACK DUCK ON-PREM ---
+        BLACKDUCK_URL       = "https://192.168.12.204"
+        
+        // --- CẤU HÌNH COVERITY SAST ---
+        COV_BIN             = "/home/ubuntu/cov-analysis-linux64-2026.9.0/bin"
+        COV_URL             = "http://192.168.12.190:8081"
+        COV_STREAM          = "webgoat-stream"
     }
     
     stages {
@@ -43,18 +43,18 @@ pipeline {
             steps {
                 script {
                     echo "[SCA & BDBA] Running Open Source and Binary Analysis..."
-                    withCredentials([string(credentialsId: 'blackduck-api-token', variable: 'BLACKDUCK_API_TOKEN')]) {
+                    withCredentials([string(credentialsId: 'blackduck-sca-token', variable: 'BLACKDUCK_API_TOKEN')]) {
                         sh """
-                            curl -k -SL -O https://detect.blackduck.com/detect10.sh && chmod +x detect10.sh
-                       
-                            ./detect10.sh \\
-                                --blackduck.url="https://192.168.12.204" \\
+                            java -jar /home/ubuntu/detect-airgap/detect-12.1.0.jar \\
+                                --blackduck.url="${BLACKDUCK_URL}" \\
                                 --blackduck.api.token="\$BLACKDUCK_API_TOKEN" \\
                                 --blackduck.trust.cert=true \\
-                                --detect.project.name="${SEEKER_PROJECT_KEY}" \\
+                                --detect.project.name="webgoat-project" \\
                                 --detect.project.version.name="${COMMON_VERSION}" \\
                                 --detect.binary.scan.file.path="${env.WEBGOAT_JAR}" \\
-                                --detect.tools=DETECTOR,SIGNATURE_SCAN
+                                --detect.tools=DETECTOR,SIGNATURE_SCAN,BINARY_SCAN \\
+                                --detect.air.gap.mode=true \\
+                                --detect.air.gap.path=/home/ubuntu/detect-airgap
                         """
                     }
                 }
@@ -69,53 +69,56 @@ pipeline {
                 }
             }
             steps {
-                withCredentials([usernamePassword(credentialsId: 'coverity-credentials', usernameVariable: 'COV_USER', passwordVariable: 'COV_PASS')]) {
+                withCredentials([file(credentialsId: 'coverity-credentials', variable: 'COV_AUTH_KEY')]) {
                     script {
                         echo '--- [Step] Synopsys Coverity SAST ---'
-                        def covBin = "/home/ubuntu/cov-analysis-linux64-2025.9.2/bin"
-                        def covUrl = "http://192.168.12.191:8081"
-
                         sh "rm -rf idir coverity-report coverity_results.json"
                         
-                        sh "${covBin}/coverity capture --project-dir . --dir idir"
-                        sh "${covBin}/cov-analyze --dir idir --all --webapp-security --strip-path \$(pwd)"
+                        sh "${COV_BIN}/coverity capture --project-dir . --dir idir"
+                        sh "${COV_BIN}/cov-analyze --dir idir --all --webapp-security --strip-path \$(pwd)"
 
                         sh """
-                            ${covBin}/cov-commit-defects --dir idir \
-                            --url ${covUrl} \
-                            --stream webgoat-stream \
-                            --user \$COV_USER --password \$COV_PASS \
-                            --version "${COMMON_VERSION}" \
-                            --description "WebGoat Build ${env.BUILD_NUMBER}" 
+                            ${COV_BIN}/cov-commit-defects --dir idir \\
+                                --url ${COV_URL} \\
+                                --stream ${COV_STREAM} \\
+                                --auth-key-file "\$COV_AUTH_KEY" \\
+                                --version "${COMMON_VERSION}" \\
+                                --description "WebGoat Build ${env.BUILD_NUMBER}" 
                         """
                         
-                        sh "${covBin}/cov-format-errors --dir idir --html-output coverity-report"
-                        sh "${covBin}/cov-format-errors --dir idir --json-output-v7 coverity_results.json"
+                        sh "${COV_BIN}/cov-format-errors --dir idir --html-output coverity-report || true"
+                        sh "${COV_BIN}/cov-format-errors --dir idir --json-output-v7 coverity_results.json || true"
                         
-                        def defectCount = sh(script: "jq '.issues | length' coverity_results.json", returnStdout: true).trim().toInteger()
-                        echo "Coverity found: ${defectCount} defects"
+                        if (fileExists('coverity_results.json')) {
+                            def defectCount = sh(script: "jq '.issues | length' coverity_results.json", returnStdout: true).trim().toInteger()
+                            echo "Coverity found: ${defectCount} defects"
+                        }
                     }
                 }
             }
         }
         
-	stage('3. Build Docker Image') {
-        steps {
-            script {
-                echo "[Docker] Building Docker Image..."
-                sh """
-                    echo "FROM eclipse-temurin:17-jre-alpine" > Dockerfile
-                    echo "COPY ${env.WEBGOAT_JAR} /app/webgoat.jar" >> Dockerfile
-                    echo "EXPOSE 8080" >> Dockerfile
-                    echo "ENTRYPOINT [\\"java\\", \\"-jar\\", \\"/app/webgoat.jar\\"]" >> Dockerfile
-                    
-                    docker build -t webgoat-docker-demo:latest .
-                """
-                
-                sh "rm -f Dockerfile"
+        stage('3. Build Docker Image') {
+            steps {
+                script {
+                    echo "[Docker] Building Docker Image..."
+                    sh """
+                        echo "FROM eclipse-temurin:17-jre-alpine" > Dockerfile
+                        echo "COPY ${env.WEBGOAT_JAR} /app/webgoat.jar" >> Dockerfile
+                        echo "EXPOSE 8080" >> Dockerfile
+                        echo "ENTRYPOINT [\\"java\\", \\"-jar\\", \\"/app/webgoat.jar\\"]" >> Dockerfile
+                        
+                        docker build -t webgoat-docker-demo:latest .
+                    """
+                    sh "rm -f Dockerfile"
+                }
             }
         }
-    }        
+
+        /*
+        // ==============================================================
+        // TẠM ĐÓNG STAGE 4: SETUP SEEKER AGENT
+        // ==============================================================
         stage('4. Setup Seeker Agent') {
             steps {
                 script {
@@ -133,7 +136,12 @@ pipeline {
                 }
             }
         }
+        */
 
+        /*
+        // ==============================================================
+        // TẠM ĐÓNG STAGE 5: RUN APP WITH SEEKER (TEST)
+        // ==============================================================
         stage('5. Run App with Seeker (Test)') {
             steps {
                 script {
@@ -155,8 +163,8 @@ pipeline {
                                 -Dseeker.server.url=${SEEKER_SERVER_URL} \\
                                 -Dseeker.project.key=${SEEKER_PROJECT_KEY} \\
                                 -Dseeker.project.version=${COMMON_VERSION} \\
-                                -Dseeker.agent.accessToken=${SEEKER_ACCESS_TOKEN} \
-				-jar ${env.WEBGOAT_JAR} \\
+                                -Dseeker.agent.accessToken=${SEEKER_ACCESS_TOKEN} \\
+                                -jar ${env.WEBGOAT_JAR} \\
                                 --server.address=0.0.0.0 \\
                                 --webgoat.port=${TEST_PORT} \\
                                 --webwolf.port=${WOLF_TEST_PORT} \\
@@ -166,7 +174,12 @@ pipeline {
                 }
             }
         }
+        */
 
+        /*
+        // ==============================================================
+        // TẠM ĐÓNG STAGE 6: HEALTH CHECK & TRAFFIC
+        // ==============================================================
         stage('6. Health Check & Traffic') {
             steps {
                 script {
@@ -211,7 +224,12 @@ pipeline {
                 }
             }
         }
+        */
 
+        /*
+        // ==============================================================
+        // TẠM ĐÓNG STAGE 7: QUALITY GATE
+        // ==============================================================
         stage('7. Quality Gate') {
             steps {
                 script {
@@ -223,7 +241,7 @@ pipeline {
                         
                         try {
                             def response = sh(
-                                script: 'curl -s -X GET -H "Authorization: $SEEKER_API_TOKEN" -H "accept: */*" "' + apiUrl + '"',
+                                script: 'curl -s -X GET -H "Authorization: \$SEEKER_API_TOKEN" -H "accept: */*" "' + apiUrl + '"',
                                 returnStdout: true
                             ).trim()
 
@@ -236,25 +254,26 @@ pipeline {
 
                             vulnList.each { vuln ->
                                 String sev = vuln.Severity?.toString()?.trim()?.toUpperCase() ?: "UNKNOWN"
-                                if (sev == 'CRITICAL') { criticalCount++; failReasons.add("[CRITICAL] ${vuln.VulnerabilityName}") }
-                                if (sev == 'HIGH') { highCount++; failReasons.add("[HIGH] ${vuln.VulnerabilityName}") }
+                                if (sev == 'CRITICAL') { criticalCount++; failReasons.add("[CRITICAL] \${vuln.VulnerabilityName}") }
+                                if (sev == 'HIGH') { highCount++; failReasons.add("[HIGH] \${vuln.VulnerabilityName}") }
                             }
 
-                            echo "Seeker Gate: Critical: ${criticalCount}/100, High: ${highCount}/100"
+                            echo "Seeker Gate: Critical: \${criticalCount}/100, High: \${highCount}/100"
 
                             if (criticalCount > 100 || highCount > 100) {
-                                failReasons.each { echo "   - ${it}" }
-                                error "Quality Gate FAILED: Found ${criticalCount} Critical & ${highCount} High vulnerabilities."
+                                failReasons.each { echo "   - \${it}" }
+                                error "Quality Gate FAILED: Found \${criticalCount} Critical & \${highCount} High vulnerabilities."
                             } else {
                                 echo "Quality Gate PASSED."
                             }
                         } catch (Exception e) {
-                            error "Failed to verify Quality Gate: ${e.getMessage()}"
+                            error "Failed to verify Quality Gate: \${e.getMessage()}"
                         }
                     }
                 }
             }
         }
+        */
         
         stage('8. Deploy to Production') {
             steps {
@@ -269,36 +288,27 @@ pipeline {
            
                         mkdir -p ${deployDir}/webgoat-data
                         mkdir -p ${deployDir}/webwolf-data
-                        mkdir -p ${deployDir}/seeker
 
                         cp ${env.WEBGOAT_JAR} ${deployDir}/webgoat-app.jar
-                        cp -r seeker/* ${deployDir}/seeker/
-                        
                         chmod -R 777 ${deployDir}/webgoat-data ${deployDir}/webwolf-data
                     """
-		    withCredentials([string(credentialsId: 'seeker-agent-token', variable: 'SEEKER_ACCESS_TOKEN')]) {
-    sh """
-        # 1. Đảm bảo Jenkins không can thiệp tắt ứng dụng sau khi kết thúc build
-        export JENKINS_NODE_COOKIE=dontKillMe
 
-        nohup java -Xmx2g \\
-            -Dfile.encoding=UTF-8 \\
-            -Duser.timezone=${TZ} \\
-            -javaagent:${deployDir}/seeker/seeker-agent.jar \\
-            -Dseeker.server.url=${SEEKER_SERVER_URL} \\
-            -Dseeker.project.key=${SEEKER_PROJECT_KEY} \\
-            -Dseeker.project.version=${COMMON_VERSION} \\
-            -Dseeker.agent.accessToken=${SEEKER_ACCESS_TOKEN} \\
-            -jar ${deployDir}/webgoat-app.jar \\
-            --server.address=0.0.0.0 \\
-            --webgoat.port=${PROD_PORT} \\
-            --webwolf.port=${WOLF_PROD_PORT} \\
-            --webwolf.address=0.0.0.0 \\
-            --webgoat.server.directory=${deployDir}/webgoat-data \\
-            --webwolf.server.directory=${deployDir}/webwolf-data \\
-            > ${deployDir}/app_webgoat_prod.log 2>&1 < /dev/null &
-    """
-                    }
+                    // Khởi chạy WebGoat độc lập mà không cần Seeker agent
+                    sh """
+                        export JENKINS_NODE_COOKIE=dontKillMe
+
+                        nohup java -Xmx2g \\
+                            -Dfile.encoding=UTF-8 \\
+                            -Duser.timezone=${TZ} \\
+                            -jar ${deployDir}/webgoat-app.jar \\
+                            --server.address=0.0.0.0 \\
+                            --webgoat.port=${PROD_PORT} \\
+                            --webwolf.port=${WOLF_PROD_PORT} \\
+                            --webwolf.address=0.0.0.0 \\
+                            --webgoat.server.directory=${deployDir}/webgoat-data \\
+                            --webwolf.server.directory=${deployDir}/webwolf-data \\
+                            > ${deployDir}/app_webgoat_prod.log 2>&1 < /dev/null &
+                    """
 
                     echo "Waiting for Production WebGoat & WebWolf to initialize..."
                     boolean prodReady = false
@@ -327,14 +337,18 @@ pipeline {
                 } 
             } 
         } 
-	stage('9. Trigger SRM Tool Connectors & Versioning') {
+
+        /*
+        // ==============================================================
+        // TẠM ĐÓNG STAGE 9: TRIGGER SRM TOOL CONNECTORS & VERSIONING
+        // ==============================================================
+        stage('9. Trigger SRM Tool Connectors & Versioning') {
             steps {
                 script {
                     echo "[SRM] Đang thực hiện quy trình kích hoạt và gắn nhãn phiên bản chuẩn..."
                     
                     withCredentials([string(credentialsId: 'srm-api-token', variable: 'SRM_API_TOKEN')]) {
                         sh """
-                            # Bước 1: Khởi tạo đợt nạp dữ liệu để lấy Prep ID
                             RESPONSE=\$(curl -k -X POST "${SRM_SERVER_URL}/api/analysis-prep" \\
                                  -H "API-Key: \$SRM_API_TOKEN" \\
                                  -H "Content-Type: application/json" \\
@@ -343,7 +357,6 @@ pipeline {
                             PREP_ID=\$(echo "\$RESPONSE" | grep -o '"prepId":"[^"]*"' | cut -d':' -f2 | tr -d '"')
                             echo "✅ Có mã Prep ID: \$PREP_ID"
                             
-                            # Bước 2: Kích hoạt chạy các Connectors ngầm (Lệnh này trả về analysisId)
                             RUN_RESPONSE=\$(curl -k -X POST "${SRM_SERVER_URL}/api/analysis-prep/\$PREP_ID/analyze" \\
                                  -H "API-Key: \$SRM_API_TOKEN" \\
                                  -H "Content-Type: application/json")
@@ -351,7 +364,6 @@ pipeline {
                             ANALYSIS_ID=\$(echo "\$RUN_RESPONSE" | grep -o '"analysisId":[0-9]*' | cut -d':' -f2)
                             echo "✅ Đã tạo lượt phân tích số: \$ANALYSIS_ID"
                             
-                            # Bước 3: ĐY CHÍNH LÀ BƯỚC ĐÚNG - Gọi API áp tên phiên bản và Tags vào Analysis ID vừa tạo
                             curl -k -X PUT "${SRM_SERVER_URL}/api/analyses/\$ANALYSIS_ID/metadata" \\
                                  -H "API-Key: \$SRM_API_TOKEN" \\
                                  -H "Content-Type: application/json" \\
@@ -363,6 +375,7 @@ pipeline {
                 }
             }
         }
+        */
     } 
 
     post {
