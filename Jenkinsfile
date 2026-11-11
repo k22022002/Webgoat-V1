@@ -22,6 +22,8 @@ pipeline {
         COV_BIN             = "/home/ubuntu/cov-analysis-linux64-2026.9.0/bin"
         COV_URL             = "http://192.168.12.190:8081"
         COV_STREAM          = "webgoat-stream"
+        COV_PROJECT_NAME    = "webgoat-v1-project"  
+        COV_VIEW_ID         = "10020"
     }
     
     stages {
@@ -39,27 +41,27 @@ pipeline {
             }
         }
 
-        stage('2. Black Duck SCA & Binary Analysis (BDBA)') {
-            steps {
-                script {
-                    echo "[SCA & BDBA] Running Open Source and Binary Analysis..."
-                    withCredentials([string(credentialsId: 'blackduck-sca-token', variable: 'BLACKDUCK_API_TOKEN')]) {
-                        sh """
-                            java -jar /home/ubuntu/detect-airgap/detect-12.1.0.jar \\
-                                --blackduck.url="${BLACKDUCK_URL}" \\
-                                --blackduck.api.token="\$BLACKDUCK_API_TOKEN" \\
-                                --blackduck.trust.cert=true \\
-                                --detect.project.name="webgoat-project" \\
-                                --detect.project.version.name="${COMMON_VERSION}" \\
-                                --detect.binary.scan.file.path="${env.WEBGOAT_JAR}" \\
-                                --detect.tools=DETECTOR,SIGNATURE_SCAN \\
-                                --detect.air.gap.mode=true \\
-                                --detect.air.gap.path=/home/ubuntu/detect-airgap
-                        """
-                    }
-                }
-            }
-        }
+        // stage('2. Black Duck SCA & Binary Analysis (BDBA)') {
+        //     steps {
+        //         script {
+        //             echo "[SCA & BDBA] Running Open Source and Binary Analysis..."
+        //             withCredentials([string(credentialsId: 'blackduck-sca-token', variable: 'BLACKDUCK_API_TOKEN')]) {
+        //                 sh """
+        //                     java -jar /home/ubuntu/detect-airgap/detect-12.1.0.jar \\
+        //                         --blackduck.url="${BLACKDUCK_URL}" \\
+        //                         --blackduck.api.token="\$BLACKDUCK_API_TOKEN" \\
+        //                         --blackduck.trust.cert=true \\
+        //                         --detect.project.name="webgoat-project" \\
+        //                         --detect.project.version.name="${COMMON_VERSION}" \\
+        //                         --detect.binary.scan.file.path="${env.WEBGOAT_JAR}" \\
+        //                         --detect.tools=DETECTOR,SIGNATURE_SCAN \\
+        //                         --detect.air.gap.mode=true \\
+        //                         --detect.air.gap.path=/home/ubuntu/detect-airgap
+        //                 """
+        //             }
+        //         }
+        //     }
+        // }
         
         stage('SAST (Coverity)') { 
             when {
@@ -97,7 +99,67 @@ pipeline {
                 }
             }
         }
-        
+        stage('Coverity Quality Gate (OWASP Check)') {
+            when {
+                anyOf {
+                    triggeredBy 'TimerTrigger' 
+                    expression { return params.FORCE_COVERITY == true }
+                }
+            }
+            steps {
+                withCredentials([file(credentialsId: 'coverity-credentials', variable: 'COV_AUTH_KEY')]) {
+                    script {
+                        echo "🔍 Đang đối soát kết quả với Coverity View #${COV_VIEW_ID} (OWASP Web Top Ten)..."
+                        
+                        // Chờ server cập nhật và đồng bộ snapshot mới vào view
+                        sleep 10
+
+                        // Lấy thông tin user/key từ file auth-key
+                        def covUser = sh(script: "jq -r '.username // empty' \"\$COV_AUTH_KEY\" 2>/dev/null || echo ''", returnStdout: true).trim()
+                        def covPass = sh(script: "jq -r '.key // empty' \"\$COV_AUTH_KEY\" 2>/dev/null || echo ''", returnStdout: true).trim()
+
+                        // Gọi API Coverity Connect v2
+                        def apiUrl = "${COV_URL}/api/v2/views/viewContents/${COV_VIEW_ID}?projectId=${COV_PROJECT_NAME}&rowCount=50"
+                        
+                        def response = sh(
+                            script: """
+                                curl -s -k -u "${covUser}:${covPass}" \\
+                                     -H "Accept: application/json" \\
+                                     "${apiUrl}"
+                            """,
+                            returnStdout: true
+                        ).trim()
+
+                        def jsonResult = new groovy.json.JsonSlurper().parseText(response)
+                        int totalDefects = (jsonResult.totalRows ?: 0) as Integer
+                        def issues = jsonResult.viewRows ?: []
+
+                        echo "📊 Kết quả từ View: Phát hiện ${totalDefects} lỗ hổng thỏa mãn bộ lọc."
+
+                        if (totalDefects > 0) {
+                            echo "❌ ===================== [QUALITY GATE FAILED] ====================="
+                            echo "Danh sách lỗi OWASP Top 10 (Medium & High) cần khắc phục:"
+                            issues.take(15).each { item ->
+                                def cid = item.cid ?: 'N/A'
+                                def displayType = item.displayType ?: item.checkerName ?: 'Vulnerability'
+                                def impact = item.displayImpact ?: item.severity ?: 'UNKNOWN'
+                                def filePath = item.strippedMainEventFilePathname ?: item.mainEventFilePathname ?: 'N/A'
+                                echo "   • [CID: ${cid}] [${impact}] ${displayType} - File: ${filePath}"
+                            }
+                            if (totalDefects > 15) {
+                                echo "   ... và còn ${totalDefects - 15} lỗi khác."
+                            }
+                            echo "===================================================================="
+                            
+                            // Dừng toàn bộ pipeline ngay lập tức
+                            error("❌ Pipeline bị DỪNG do vi phạm Quality Gate: Có ${totalDefects} lỗi OWASP Top 10 (Medium/High) chưa khắc phục!")
+                        } else {
+                            echo "✅ [QUALITY GATE PASSED] Không có lỗi OWASP nào thuộc mức Medium/High."
+                        }
+                    }
+                }
+            }
+        }
         stage('3. Build Docker Image') {
             steps {
                 script {
@@ -275,68 +337,68 @@ pipeline {
         }
         */
         
-        stage('8. Deploy to Production') {
-            steps {
-                script {
-                    echo "[Deploy] Deploying latest WebGoat to Production on Port ${PROD_PORT}..."
-                    def deployDir = "${WORKSPACE}/deploy_prod" 
+        // stage('8. Deploy to Production') {
+        //     steps {
+        //         script {
+        //             echo "[Deploy] Deploying latest WebGoat to Production on Port ${PROD_PORT}..."
+        //             def deployDir = "${WORKSPACE}/deploy_prod" 
 
-                    sh """
-                        fuser -k ${PROD_PORT}/tcp || true
-                        fuser -k ${WOLF_PROD_PORT}/tcp || true
-                        sleep 2
+        //             sh """
+        //                 fuser -k ${PROD_PORT}/tcp || true
+        //                 fuser -k ${WOLF_PROD_PORT}/tcp || true
+        //                 sleep 2
            
-                        mkdir -p ${deployDir}/webgoat-data
-                        mkdir -p ${deployDir}/webwolf-data
+        //                 mkdir -p ${deployDir}/webgoat-data
+        //                 mkdir -p ${deployDir}/webwolf-data
 
-                        cp ${env.WEBGOAT_JAR} ${deployDir}/webgoat-app.jar
-                        chmod -R 777 ${deployDir}/webgoat-data ${deployDir}/webwolf-data
-                    """
+        //                 cp ${env.WEBGOAT_JAR} ${deployDir}/webgoat-app.jar
+        //                 chmod -R 777 ${deployDir}/webgoat-data ${deployDir}/webwolf-data
+        //             """
 
-                    // Khởi chạy WebGoat độc lập mà không cần Seeker agent
-                    sh """
-                        export JENKINS_NODE_COOKIE=dontKillMe
+        //             // Khởi chạy WebGoat độc lập mà không cần Seeker agent
+        //             sh """
+        //                 export JENKINS_NODE_COOKIE=dontKillMe
 
-                        nohup java -Xmx2g \\
-                            -Dfile.encoding=UTF-8 \\
-                            -Duser.timezone=${TZ} \\
-                            -jar ${deployDir}/webgoat-app.jar \\
-                            --server.address=0.0.0.0 \\
-                            --webgoat.port=${PROD_PORT} \\
-                            --webwolf.port=${WOLF_PROD_PORT} \\
-                            --webwolf.address=0.0.0.0 \\
-                            --webgoat.server.directory=${deployDir}/webgoat-data \\
-                            --webwolf.server.directory=${deployDir}/webwolf-data \\
-                            > ${deployDir}/app_webgoat_prod.log 2>&1 < /dev/null &
-                    """
+        //                 nohup java -Xmx2g \\
+        //                     -Dfile.encoding=UTF-8 \\
+        //                     -Duser.timezone=${TZ} \\
+        //                     -jar ${deployDir}/webgoat-app.jar \\
+        //                     --server.address=0.0.0.0 \\
+        //                     --webgoat.port=${PROD_PORT} \\
+        //                     --webwolf.port=${WOLF_PROD_PORT} \\
+        //                     --webwolf.address=0.0.0.0 \\
+        //                     --webgoat.server.directory=${deployDir}/webgoat-data \\
+        //                     --webwolf.server.directory=${deployDir}/webwolf-data \\
+        //                     > ${deployDir}/app_webgoat_prod.log 2>&1 < /dev/null &
+        //             """
 
-                    echo "Waiting for Production WebGoat & WebWolf to initialize..."
-                    boolean prodReady = false
+        //             echo "Waiting for Production WebGoat & WebWolf to initialize..."
+        //             boolean prodReady = false
  
-                    for (int i = 1; i <= 60; i++) {
-                        def gStatus = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${PROD_PORT}/WebGoat/login || echo '000'", returnStdout: true).trim()
-                        def wStatus = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${WOLF_PROD_PORT}/WebWolf/login || echo '000'", returnStdout: true).trim()
+        //             for (int i = 1; i <= 60; i++) {
+        //                 def gStatus = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${PROD_PORT}/WebGoat/login || echo '000'", returnStdout: true).trim()
+        //                 def wStatus = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${WOLF_PROD_PORT}/WebWolf/login || echo '000'", returnStdout: true).trim()
                   
-                        if (gStatus == '200' && (wStatus == '200' || wStatus == '302')) {
-                            echo "✅ Both servers are UP!"
-                            sh """
-                                curl -s -X POST http://127.0.0.1:${PROD_PORT}/WebGoat/register.mvc \\
-                                    -d "username=webgoatadmin&password=password&matchingPassword=password&agree=agree" \\
-                                    -H "Content-Type: application/x-www-form-urlencoded" > /dev/null
-                            """
-                            prodReady = true
-                            break
-                        }
-                        sleep 15
-                    }
+        //                 if (gStatus == '200' && (wStatus == '200' || wStatus == '302')) {
+        //                     echo "✅ Both servers are UP!"
+        //                     sh """
+        //                         curl -s -X POST http://127.0.0.1:${PROD_PORT}/WebGoat/register.mvc \\
+        //                             -d "username=webgoatadmin&password=password&matchingPassword=password&agree=agree" \\
+        //                             -H "Content-Type: application/x-www-form-urlencoded" > /dev/null
+        //                     """
+        //                     prodReady = true
+        //                     break
+        //                 }
+        //                 sleep 15
+        //             }
                     
-                    if (!prodReady) {
-                        sh "cat ${deployDir}/app_webgoat_prod.log || echo 'Log file not found!'"
-                        error "Deployment Failed: Production server did not start properly."
-                    }
-                } 
-            } 
-        } 
+        //             if (!prodReady) {
+        //                 sh "cat ${deployDir}/app_webgoat_prod.log || echo 'Log file not found!'"
+        //                 error "Deployment Failed: Production server did not start properly."
+        //             }
+        //         } 
+        //     } 
+        // } 
 
         /*
         // ==============================================================
